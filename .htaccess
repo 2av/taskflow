@@ -1,0 +1,15 @@
+# Prevent directory listing
+Options -Indexes
+
+# Protect config files
+<FilesMatch "^(config|includes)">
+    Order allow,deny
+    Deny from all
+</FilesMatch>
+
+# Enable error reporting (disable in production)
+# php_flag display_errors On
+# php_value error_reporting E_ALL
+
+# Set default charset
+AddDefaultCharset UTF-8
