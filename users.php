@@ -145,60 +145,135 @@ $conn->close();
 include 'includes/header.php';
 ?>
 
-<div class="page-header">
-    <h1 class="page-title">User Management</h1>
-    <button class="btn btn-primary modal-trigger" data-modal="userModal" title="Add New User"><i class="fas fa-plus"></i></button>
-</div>
+<div style="width: 100%; padding: 20px;">
+    <!-- Page Header -->
+    <div class="flex items-center justify-between mb-6" style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px;">
+        <div>
+            <h1 class="text-3xl font-semibold text-gray-900" style="font-size: 28px; font-weight: 600; color: #1e293b; margin: 0;">Users</h1>
+            <p class="text-gray-500 mt-1" style="color: #64748b; margin-top: 4px; font-size: 14px;">Manage user accounts and permissions</p>
+        </div>
+        <button class="btn btn-primary modal-trigger" data-modal="userModal" title="Add New User" style="display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px; background: linear-gradient(135deg, #14b8a6 0%, #0d9488 100%); color: white; border: none; border-radius: 8px; font-weight: 500; cursor: pointer; transition: all 0.2s; box-shadow: 0 2px 4px rgba(20, 184, 166, 0.3);">
+            <i class="fas fa-plus"></i>
+            <span>Add User</span>
+        </button>
+    </div>
 
-<?php if ($message): ?>
-    <div class="alert alert-success"><?php echo htmlspecialchars($message); ?></div>
-<?php endif; ?>
+    <?php if ($message): ?>
+        <div class="alert alert-success" style="background: #d1fae5; border: 1px solid #10b981; color: #065f46; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; display: flex; align-items: center; gap: 8px;">
+            <i class="fas fa-check-circle"></i>
+            <span><?php echo htmlspecialchars($message); ?></span>
+        </div>
+    <?php endif; ?>
 
-<?php if ($error): ?>
-    <div class="alert alert-error"><?php echo htmlspecialchars($error); ?></div>
-<?php endif; ?>
+    <?php if ($error): ?>
+        <div class="alert alert-error" style="background: #fee2e2; border: 1px solid #ef4444; color: #991b1b; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; display: flex; align-items: center; gap: 8px;">
+            <i class="fas fa-exclamation-circle"></i>
+            <span><?php echo htmlspecialchars($error); ?></span>
+        </div>
+    <?php endif; ?>
 
-<div class="table-container">
-    <table>
-        <thead>
-            <tr>
-                <th>ID</th>
-                <th>Username</th>
-                <th>Email</th>
-                <th>Full Name</th>
-                <th>Role</th>
-                <th>Status</th>
-                <th>Created</th>
-                <th>Actions</th>
-            </tr>
-        </thead>
-        <tbody>
-            <?php foreach ($users as $user): ?>
+    <!-- Users Table -->
+    <div class="table-container">
+        <table>
+            <thead>
                 <tr>
-                    <td><?php echo $user['id']; ?></td>
-                    <td><?php echo htmlspecialchars($user['username']); ?></td>
-                    <td><?php echo htmlspecialchars($user['email']); ?></td>
-                    <td><?php echo htmlspecialchars($user['full_name']); ?></td>
-                    <td><?php echo htmlspecialchars($user['role_name']); ?></td>
+                    <th>Username</th>
+                    <th>Email</th>
+                    <th>Full Name</th>
+                    <th>Role</th>
                     <?php if (isSuperAdmin()): ?>
-                        <td><?php echo htmlspecialchars($user['org_name'] ?? '-'); ?></td>
+                        <th>Organization</th>
                     <?php endif; ?>
-                    <td>
-                        <span class="badge <?php echo $user['status'] == 'active' ? 'badge-success' : 'badge-secondary'; ?>">
-                            <?php echo ucfirst($user['status']); ?>
-                        </span>
-                    </td>
-                    <td><?php echo formatDate($user['created_at']); ?></td>
-                    <td>
-                        <a href="?edit=<?php echo $user['id']; ?>" class="btn btn-sm btn-primary" title="Edit"><i class="fas fa-edit"></i></a>
-                        <?php if ($user['id'] != $_SESSION['user_id']): ?>
-                            <a href="?delete=<?php echo $user['id']; ?>" class="btn btn-sm btn-danger btn-delete" title="Delete"><i class="fas fa-trash"></i></a>
-                        <?php endif; ?>
-                    </td>
+                    <th>Status</th>
+                    <th>Created</th>
+                    <th style="text-align: center;">Actions</th>
                 </tr>
-            <?php endforeach; ?>
-        </tbody>
-    </table>
+            </thead>
+            <tbody>
+                <?php if (empty($users)): ?>
+                    <tr>
+                        <td colspan="<?php echo isSuperAdmin() ? '8' : '7'; ?>" style="text-align: center; padding: 40px 20px; color: #94a3b8;">
+                            <i class="fas fa-users" style="font-size: 48px; margin-bottom: 12px; opacity: 0.3; display: block;"></i>
+                            <p style="font-size: 16px; margin: 0;">No users found</p>
+                            <p style="font-size: 14px; margin-top: 8px; color: #cbd5e1;">Create your first user to get started</p>
+                        </td>
+                    </tr>
+                <?php else: ?>
+                    <?php foreach ($users as $user): ?>
+                        <tr>
+                            <td>
+                                <strong style="color: #1e293b; font-size: 15px;"><?php echo htmlspecialchars($user['username']); ?></strong>
+                            </td>
+                            <td style="color: #64748b;">
+                                <i class="fas fa-envelope" style="margin-right: 6px; color: #94a3b8;"></i>
+                                <?php echo htmlspecialchars($user['email']); ?>
+                            </td>
+                            <td style="color: #475569;">
+                                <?php echo htmlspecialchars($user['full_name']); ?>
+                            </td>
+                            <td>
+                                <?php 
+                                $role_name = htmlspecialchars($user['role_name']);
+                                $role_colors = [
+                                    'Super Admin' => ['bg' => '#fef3c7', 'text' => '#92400e', 'border' => '#f59e0b'],
+                                    'Org Admin' => ['bg' => '#dbeafe', 'text' => '#1e40af', 'border' => '#3b82f6'],
+                                    'Admin' => ['bg' => '#e0e7ff', 'text' => '#3730a3', 'border' => '#6366f1'],
+                                    'Project Manager' => ['bg' => '#d1fae5', 'text' => '#065f46', 'border' => '#10b981'],
+                                    'Team Member' => ['bg' => '#f3f4f6', 'text' => '#374151', 'border' => '#9ca3af']
+                                ];
+                                $role_color = $role_colors[$role_name] ?? ['bg' => '#f3f4f6', 'text' => '#374151', 'border' => '#9ca3af'];
+                                ?>
+                                <span class="badge" style="display: inline-flex; align-items: center; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 500; background: <?php echo $role_color['bg']; ?>; color: <?php echo $role_color['text']; ?>; border: 1px solid <?php echo $role_color['border']; ?>;">
+                                    <?php echo $role_name; ?>
+                                </span>
+                            </td>
+                            <?php if (isSuperAdmin()): ?>
+                                <td style="color: #64748b;">
+                                    <?php 
+                                    if (!empty($user['org_name'])) {
+                                        echo htmlspecialchars($user['org_name']);
+                                    } else {
+                                        echo '<span style="color: #cbd5e1; font-style: italic;">No organization</span>';
+                                    }
+                                    ?>
+                                </td>
+                            <?php endif; ?>
+                            <td>
+                                <?php 
+                                $status = $user['status'];
+                                $status_colors = [
+                                    'active' => ['bg' => '#d1fae5', 'text' => '#065f46', 'border' => '#10b981'],
+                                    'inactive' => ['bg' => '#fee2e2', 'text' => '#991b1b', 'border' => '#ef4444']
+                                ];
+                                $status_color = $status_colors[$status] ?? ['bg' => '#f3f4f6', 'text' => '#374151', 'border' => '#9ca3af'];
+                                ?>
+                                <span class="badge" style="display: inline-flex; align-items: center; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 500; background: <?php echo $status_color['bg']; ?>; color: <?php echo $status_color['text']; ?>; border: 1px solid <?php echo $status_color['border']; ?>;">
+                                    <i class="fas fa-<?php echo $status == 'active' ? 'check-circle' : 'times-circle'; ?>" style="margin-right: 4px; font-size: 10px;"></i>
+                                    <?php echo ucfirst($status); ?>
+                                </span>
+                            </td>
+                            <td style="color: #64748b; font-size: 13px;">
+                                <i class="fas fa-calendar-alt" style="margin-right: 6px; color: #94a3b8;"></i>
+                                <?php echo formatDate($user['created_at']); ?>
+                            </td>
+                            <td style="text-align: center;">
+                                <div style="display: inline-flex; gap: 6px;">
+                                    <a href="?edit=<?php echo $user['id']; ?>" class="btn btn-sm btn-warning" title="Edit" style="padding: 6px 10px; background: #f59e0b; color: white; border: none; border-radius: 6px; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; transition: all 0.2s;">
+                                        <i class="fas fa-edit"></i>
+                                    </a>
+                                    <?php if ($user['id'] != $_SESSION['user_id']): ?>
+                                        <a href="?delete=<?php echo $user['id']; ?>" class="btn btn-sm btn-danger btn-delete" title="Delete" style="padding: 6px 10px; background: #ef4444; color: white; border: none; border-radius: 6px; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; transition: all 0.2s;">
+                                            <i class="fas fa-trash"></i>
+                                        </a>
+                                    <?php endif; ?>
+                                </div>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+            </tbody>
+        </table>
+    </div>
 </div>
 
 <!-- Add/Edit User Modal -->

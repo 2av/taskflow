@@ -1,0 +1,550 @@
+<?php
+require_once 'config/config.php';
+requireLogin();
+requireActiveSubscription();
+
+$page_title = 'Add New Task';
+$conn = getDBConnection();
+$message = '';
+$error = '';
+$edit_task = null;
+$task_id = null;
+
+// Check if editing
+if (isset($_GET['edit'])) {
+    $task_id = intval($_GET['edit']);
+    $stmt = $conn->prepare("SELECT * FROM tasks WHERE id = ?");
+    $stmt->bind_param("i", $task_id);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    if ($result->num_rows > 0) {
+        $edit_task = $result->fetch_assoc();
+        $page_title = 'Edit Task';
+    } else {
+        header('Location: tasks');
+        exit();
+    }
+    $stmt->close();
+}
+
+// Get projects list
+if (isSuperAdmin()) {
+    $projects = $conn->query("SELECT * FROM projects ORDER BY name")->fetch_all(MYSQLI_ASSOC);
+} else {
+    $org_id = getOrganizationId();
+    if ($org_id) {
+        $stmt = $conn->prepare("SELECT * FROM projects WHERE organization_id = ? ORDER BY name");
+        $stmt->bind_param("i", $org_id);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $projects = $result->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+    } else {
+        $projects = [];
+    }
+}
+
+// Get users list for assignee
+if (isSuperAdmin()) {
+    $users = $conn->query("SELECT id, full_name FROM users WHERE status = 'active' ORDER BY full_name")->fetch_all(MYSQLI_ASSOC);
+} else {
+    $org_id = getOrganizationId();
+    if ($org_id) {
+        $stmt = $conn->prepare("SELECT id, full_name FROM users WHERE organization_id = ? AND status = 'active' ORDER BY full_name");
+        $stmt->bind_param("i", $org_id);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $users = $result->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+    } else {
+        $users = [];
+    }
+}
+
+// Handle task creation
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['create_task'])) {
+    $project_id = intval($_POST['project_id']);
+    $title = trim($_POST['title']);
+    $description = trim($_POST['description'] ?? '');
+    $type = $_POST['type'];
+    $priority = $_POST['priority'];
+    $assignee_id = !empty($_POST['assignee_id']) ? intval($_POST['assignee_id']) : null;
+    $due_date = !empty($_POST['due_date']) ? $_POST['due_date'] : null;
+    $created_by = $_SESSION['user_id'];
+    
+    if (empty($title) || empty($project_id)) {
+        $error = 'Title and project are required';
+    } else {
+        // Verify project belongs to user's organization (unless super admin)
+        if (!isSuperAdmin()) {
+            $org_id = getOrganizationId();
+            $stmt = $conn->prepare("SELECT id FROM projects WHERE id = ? AND organization_id = ?");
+            $stmt->bind_param("ii", $project_id, $org_id);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            if ($result->num_rows == 0) {
+                $error = 'Invalid project selected';
+                $stmt->close();
+            } else {
+                $stmt->close();
+            }
+        }
+        
+        if (empty($error)) {
+            // Generate task ID
+            $project_code = $conn->query("SELECT name FROM projects WHERE id = $project_id")->fetch_assoc()['name'];
+            $project_code = strtoupper(substr(preg_replace('/[^A-Za-z0-9]/', '', $project_code), 0, 3));
+            $task_num = $conn->query("SELECT COUNT(*) as count FROM tasks WHERE project_id = $project_id")->fetch_assoc()['count'] + 1;
+            $task_id_str = $project_code . '-' . $task_num;
+            
+            $stmt = $conn->prepare("INSERT INTO tasks (task_id, project_id, title, description, type, priority, assignee_id, due_date, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            $stmt->bind_param("sissssssi", $task_id_str, $project_id, $title, $description, $type, $priority, $assignee_id, $due_date, $created_by);
+            
+            if ($stmt->execute()) {
+                $task_insert_id = $conn->insert_id;
+                
+                // Log activity
+                $action = "Task created";
+                $stmt2 = $conn->prepare("INSERT INTO activity_logs (task_id, user_id, action) VALUES (?, ?, ?)");
+                $stmt2->bind_param("iis", $task_insert_id, $created_by, $action);
+                $stmt2->execute();
+                
+                header('Location: task_view?id=' . $task_insert_id);
+                exit();
+            } else {
+                $error = 'Error creating task: ' . $conn->error;
+            }
+        }
+    }
+}
+
+// Handle task update
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_task'])) {
+    $task_id = intval($_POST['task_id']);
+    $title = trim($_POST['title']);
+    $description = trim($_POST['description'] ?? '');
+    $type = $_POST['type'];
+    $priority = $_POST['priority'];
+    $status = $_POST['status'];
+    $assignee_id = !empty($_POST['assignee_id']) ? intval($_POST['assignee_id']) : null;
+    $due_date = !empty($_POST['due_date']) ? $_POST['due_date'] : null;
+    
+    // Get old values for logging
+    $old_task = $conn->query("SELECT * FROM tasks WHERE id = $task_id")->fetch_assoc();
+    
+    $stmt = $conn->prepare("UPDATE tasks SET title=?, description=?, type=?, priority=?, status=?, assignee_id=?, due_date=? WHERE id=?");
+    $stmt->bind_param("sssssssi", $title, $description, $type, $priority, $status, $assignee_id, $due_date, $task_id);
+    
+    if ($stmt->execute()) {
+        // Log changes
+        $user_id = $_SESSION['user_id'];
+        
+        if ($old_task['status'] != $status) {
+            $action = "Status changed";
+            $stmt2 = $conn->prepare("INSERT INTO activity_logs (task_id, user_id, action, old_value, new_value) VALUES (?, ?, ?, ?, ?)");
+            $stmt2->bind_param("iisss", $task_id, $user_id, $action, $old_task['status'], $status);
+            $stmt2->execute();
+        }
+        
+        if ($old_task['assignee_id'] != $assignee_id) {
+            $action = "Assignee changed";
+            $old_name = $old_task['assignee_id'] ? $conn->query("SELECT full_name FROM users WHERE id = " . $old_task['assignee_id'])->fetch_assoc()['full_name'] : 'Unassigned';
+            $new_name = $assignee_id ? $conn->query("SELECT full_name FROM users WHERE id = $assignee_id")->fetch_assoc()['full_name'] : 'Unassigned';
+            $stmt2 = $conn->prepare("INSERT INTO activity_logs (task_id, user_id, action, old_value, new_value) VALUES (?, ?, ?, ?, ?)");
+            $stmt2->bind_param("iisss", $task_id, $user_id, $action, $old_name, $new_name);
+            $stmt2->execute();
+        }
+        
+        if ($old_task['priority'] != $priority) {
+            $action = "Priority changed";
+            $stmt2 = $conn->prepare("INSERT INTO activity_logs (task_id, user_id, action, old_value, new_value) VALUES (?, ?, ?, ?, ?)");
+            $stmt2->bind_param("iisss", $task_id, $user_id, $action, $old_task['priority'], $priority);
+            $stmt2->execute();
+        }
+        
+        header('Location: task_view?id=' . $task_id);
+        exit();
+    } else {
+        $error = 'Error updating task';
+    }
+}
+
+// Get selected project from session (if coming from dashboard)
+$selected_project_id = null;
+$is_project_locked = false;
+$locked_project_name = '';
+
+if ($edit_task) {
+    $selected_project_id = $edit_task['project_id'];
+} elseif (isset($_SESSION['selected_project_id']) && !empty($_SESSION['selected_project_id'])) {
+    $selected_project_id = intval($_SESSION['selected_project_id']);
+    $is_project_locked = true;
+    // Get project name
+    foreach ($projects as $project) {
+        if ($project['id'] == $selected_project_id) {
+            $locked_project_name = $project['name'];
+            break;
+        }
+    }
+}
+
+$conn->close();
+
+include 'includes/header.php';
+?>
+
+<style>
+.task-form-container {
+    width: 100%;
+    margin: 0;
+    padding: 15px;
+}
+
+.task-form-header {
+    background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%);
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 24px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    border: 1px solid #e2e8f0;
+}
+
+.task-form-content {
+    background: #ffffff;
+    border-radius: 12px;
+    padding: 32px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    border: 1px solid #e2e8f0;
+    max-width: 900px;
+    margin: 0 auto;
+}
+
+.form-group {
+    margin-bottom: 24px;
+}
+
+.form-group label {
+    display: block;
+    font-weight: 600;
+    color: #1e293b;
+    font-size: 14px;
+    margin-bottom: 8px;
+}
+
+.form-group label .required {
+    color: #ef4444;
+    margin-left: 4px;
+}
+
+.form-group input[type="text"],
+.form-group input[type="date"],
+.form-group select {
+    width: 100%;
+    padding: 12px 16px;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    font-size: 14px;
+    background: #ffffff;
+    color: #1e293b;
+    transition: all 0.2s;
+}
+
+.form-group input[type="text"]:focus,
+.form-group input[type="date"]:focus,
+.form-group select:focus {
+    outline: none;
+    border-color: #14b8a6;
+    box-shadow: 0 0 0 4px rgba(20, 184, 166, 0.1);
+}
+
+.form-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+}
+
+@media (max-width: 768px) {
+    .form-row {
+        grid-template-columns: 1fr;
+    }
+}
+
+.form-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    margin-top: 32px;
+    padding-top: 24px;
+    border-top: 1px solid #e2e8f0;
+}
+
+.btn {
+    padding: 12px 24px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    border: none;
+    text-decoration: none;
+}
+
+.btn-primary {
+    background: #14b8a6;
+    color: white;
+}
+
+.btn-primary:hover {
+    background: #0d9488;
+    box-shadow: 0 4px 12px rgba(20, 184, 166, 0.3);
+}
+
+.btn-secondary {
+    background: #f1f5f9;
+    color: #475569;
+}
+
+.btn-secondary:hover {
+    background: #e2e8f0;
+}
+
+.alert {
+    padding: 12px 16px;
+    border-radius: 8px;
+    margin-bottom: 20px;
+    font-size: 14px;
+}
+
+.alert-success {
+    background: #d1fae5;
+    color: #065f46;
+    border: 1px solid #6ee7b7;
+}
+
+.alert-error {
+    background: #fee2e2;
+    color: #991b1b;
+    border: 1px solid #fca5a5;
+}
+
+/* CKEditor styling */
+.ck-editor__editable {
+    min-height: 200px;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+}
+</style>
+
+<div class="task-form-container">
+    <!-- Page Header -->
+    <div class="task-form-header">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <a href="tasks" class="btn btn-secondary" title="Back to Tasks" style="padding: 10px 12px; min-width: auto;">
+                    <i class="fas fa-arrow-left"></i>
+                </a>
+                <h1 class="page-title" style="margin: 0; font-size: 28px; font-weight: 700; color: #1e293b;">
+                    <?php echo $edit_task ? 'Edit Task' : 'Add New Task'; ?>
+                    <?php if ($is_project_locked && !$edit_task): ?>
+                        <span style="font-size: 18px; font-weight: 500; color: #64748b; margin-left: 8px;">
+                            (<?php echo htmlspecialchars($locked_project_name); ?>)
+                        </span>
+                    <?php endif; ?>
+                </h1>
+            </div>
+        </div>
+    </div>
+
+    <?php if ($message): ?>
+        <div class="alert alert-success"><?php echo htmlspecialchars($message); ?></div>
+    <?php endif; ?>
+
+    <?php if ($error): ?>
+        <div class="alert alert-error"><?php echo htmlspecialchars($error); ?></div>
+    <?php endif; ?>
+
+    <!-- Task Form -->
+    <div class="task-form-content">
+        <form method="POST" action="" id="taskForm">
+            <?php if ($edit_task): ?>
+                <input type="hidden" name="task_id" value="<?php echo $edit_task['id']; ?>">
+                <input type="hidden" name="update_task" value="1">
+            <?php else: ?>
+                <input type="hidden" name="create_task" value="1">
+            <?php endif; ?>
+            
+            <!-- Project Field -->
+            <div class="form-group" <?php echo ($is_project_locked && !$edit_task) ? 'style="display: none;"' : ''; ?>>
+                <label for="project_id">
+                    Project <span class="required">*</span>
+                </label>
+                <select id="project_id" name="project_id" required>
+                    <option value="">Select Project</option>
+                    <?php foreach ($projects as $project): ?>
+                        <option value="<?php echo $project['id']; ?>" 
+                                <?php echo ($selected_project_id && $selected_project_id == $project['id']) ? 'selected' : ''; ?>>
+                            <?php echo htmlspecialchars($project['name']); ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+                <?php if ($is_project_locked && !$edit_task): ?>
+                    <input type="hidden" name="project_id" value="<?php echo $selected_project_id; ?>">
+                <?php endif; ?>
+            </div>
+            
+            <!-- Title Field -->
+            <div class="form-group">
+                <label for="title">
+                    Title <span class="required">*</span>
+                </label>
+                <input type="text" id="title" name="title" required 
+                       value="<?php echo htmlspecialchars($edit_task['title'] ?? ''); ?>"
+                       placeholder="Enter task title">
+            </div>
+            
+            <!-- Description Field with CKEditor -->
+            <div class="form-group">
+                <label for="description">
+                    Description
+                </label>
+                <textarea id="description" name="description" rows="6"><?php echo htmlspecialchars($edit_task['description'] ?? ''); ?></textarea>
+            </div>
+            
+            <!-- Type and Priority Row -->
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="type">
+                        Type <span class="required">*</span>
+                    </label>
+                    <select id="type" name="type" required>
+                        <option value="Task" <?php echo ($edit_task && $edit_task['type'] == 'Task') ? 'selected' : ''; ?>>Task</option>
+                        <option value="Bug" <?php echo ($edit_task && $edit_task['type'] == 'Bug') ? 'selected' : ''; ?>>Bug</option>
+                        <option value="Improvement" <?php echo ($edit_task && $edit_task['type'] == 'Improvement') ? 'selected' : ''; ?>>Improvement</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label for="priority">
+                        Priority <span class="required">*</span>
+                    </label>
+                    <select id="priority" name="priority" required>
+                        <option value="Low" <?php echo ($edit_task && $edit_task['priority'] == 'Low') ? 'selected' : ''; ?>>Low</option>
+                        <option value="Medium" <?php echo ($edit_task && $edit_task['priority'] == 'Medium') ? 'selected' : ''; ?>>Medium</option>
+                        <option value="High" <?php echo ($edit_task && $edit_task['priority'] == 'High') ? 'selected' : ''; ?>>High</option>
+                    </select>
+                </div>
+            </div>
+            
+            <!-- Status Field (Edit Mode Only) -->
+            <?php if ($edit_task): ?>
+                <div class="form-group">
+                    <label for="status">
+                        Status <span class="required">*</span>
+                    </label>
+                    <select id="status" name="status" required>
+                        <option value="To Do" <?php echo $edit_task['status'] == 'To Do' ? 'selected' : ''; ?>>To Do</option>
+                        <option value="In Progress" <?php echo $edit_task['status'] == 'In Progress' ? 'selected' : ''; ?>>In Progress</option>
+                        <option value="Done" <?php echo $edit_task['status'] == 'Done' ? 'selected' : ''; ?>>Done</option>
+                    </select>
+                </div>
+            <?php endif; ?>
+            
+            <!-- Assignee and Due Date Row -->
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="assignee_id">
+                        Assignee
+                    </label>
+                    <select id="assignee_id" name="assignee_id">
+                        <option value="">Unassigned</option>
+                        <?php foreach ($users as $user): ?>
+                            <option value="<?php echo $user['id']; ?>" 
+                                    <?php echo ($edit_task && $edit_task['assignee_id'] == $user['id']) ? 'selected' : ''; ?>>
+                                <?php echo htmlspecialchars($user['full_name']); ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label for="due_date">
+                        Due Date
+                    </label>
+                    <input type="date" id="due_date" name="due_date" 
+                           value="<?php echo $edit_task && $edit_task['due_date'] ? date('Y-m-d', strtotime($edit_task['due_date'])) : ''; ?>">
+                </div>
+            </div>
+            
+            <!-- Form Actions -->
+            <div class="form-actions">
+                <a href="tasks" class="btn btn-secondary">
+                    <i class="fas fa-times"></i>
+                    Cancel
+                </a>
+                <button type="submit" class="btn btn-primary">
+                    <i class="fas fa-<?php echo $edit_task ? 'save' : 'plus'; ?>"></i>
+                    <?php echo $edit_task ? 'Update Task' : 'Create Task'; ?>
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- CKEditor CDN -->
+<script src="https://cdn.ckeditor.com/ckeditor5/41.0.0/classic/ckeditor.js"></script>
+
+<script>
+// Initialize CKEditor
+let editor;
+
+ClassicEditor
+    .create(document.querySelector('#description'), {
+        toolbar: {
+            items: [
+                'heading',
+                '|',
+                'bold',
+                'italic',
+                'link',
+                'bulletedList',
+                'numberedList',
+                '|',
+                'outdent',
+                'indent',
+                '|',
+                'blockQuote',
+                'insertTable',
+                '|',
+                'undo',
+                'redo'
+            ]
+        },
+        language: 'en',
+        heading: {
+            options: [
+                { model: 'paragraph', title: 'Paragraph', class: 'ck-heading_paragraph' },
+                { model: 'heading1', view: 'h1', title: 'Heading 1', class: 'ck-heading_heading1' },
+                { model: 'heading2', view: 'h2', title: 'Heading 2', class: 'ck-heading_heading2' },
+                { model: 'heading3', view: 'h3', title: 'Heading 3', class: 'ck-heading_heading3' }
+            ]
+        }
+    })
+    .then(instance => {
+        editor = instance;
+    })
+    .catch(error => {
+        console.error('Error initializing CKEditor:', error);
+    });
+
+// Update textarea before form submission
+document.getElementById('taskForm').addEventListener('submit', function(e) {
+    if (editor) {
+        editor.updateSourceElement();
+    }
+});
+</script>
+
+<?php include 'includes/footer.php'; ?>

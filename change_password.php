@@ -66,7 +66,7 @@ include 'includes/header.php';
 
 <div class="page-header">
     <h1 class="page-title">Change Password</h1>
-    <a href="dashboard.php" class="btn btn-secondary" title="Back to Dashboard"><i class="fas fa-arrow-left"></i></a>
+    <a href="dashboard" class="btn btn-secondary" title="Back to Dashboard"><i class="fas fa-arrow-left"></i></a>
 </div>
 
 <?php if ($message): ?>
@@ -101,7 +101,7 @@ include 'includes/header.php';
             
             <div style="display: flex; gap: 10px; margin-top: 25px;">
                 <button type="submit" name="change_password" class="btn btn-primary" title="Change Password"><i class="fas fa-key"></i></button>
-                <a href="dashboard.php" class="btn btn-secondary" title="Cancel"><i class="fas fa-times"></i></a>
+                <a href="dashboard" class="btn btn-secondary" title="Cancel"><i class="fas fa-times"></i></a>
             </div>
         </form>
     </div>

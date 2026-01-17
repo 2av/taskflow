@@ -491,7 +491,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['create_tables'])) {
         
         <?php if ($message): ?>
             <div style="margin-top: 20px; text-align: center;">
-                <a href="../index.php" style="color: #667eea; text-decoration: none;">Go to Login Page →</a>
+                <a href="../index" style="color: #667eea; text-decoration: none;">Go to Login Page →</a>
             </div>
         <?php endif; ?>
     </div>

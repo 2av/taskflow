@@ -75,6 +75,20 @@ if (!empty($search)) {
     $query_types .= 's';
 }
 
+// Get task statistics BEFORE filtering (for badge counts)
+$stats_query = "
+    SELECT 
+        COUNT(*) as total_tasks,
+        SUM(CASE WHEN t.status = 'To Do' THEN 1 ELSE 0 END) as todo_count,
+        SUM(CASE WHEN t.status = 'In Progress' THEN 1 ELSE 0 END) as inprogress_count,
+        SUM(CASE WHEN t.status = 'Done' THEN 1 ELSE 0 END) as done_count
+    FROM tasks t
+    WHERE t.assignee_id = $user_id
+";
+$stats_result = $conn->query($stats_query);
+$task_stats = $stats_result->fetch_assoc();
+$stats_result->free();
+
 $where_clause = "WHERE " . implode(" AND ", $where_conditions);
 
 // Get tasks assigned to current user
@@ -104,17 +118,17 @@ if (!empty($query_params)) {
     $tasks = $conn->query($query)->fetch_all(MYSQLI_ASSOC);
 }
 
-// Get statistics
-$total_tasks = count($tasks);
-$overdue_tasks = 0;
-$status_counts = ['To Do' => 0, 'In Progress' => 0, 'Done' => 0];
-
-foreach ($tasks as $task) {
-    if ($task['due_date'] && strtotime($task['due_date']) < time() && $task['status'] != 'Done') {
-        $overdue_tasks++;
-    }
-    if (isset($status_counts[$task['status']])) {
-        $status_counts[$task['status']]++;
+// Helper function to get initials
+function getInitials($full_name) {
+    $full_name = trim($full_name);
+    $words = explode(' ', $full_name);
+    $words = array_filter($words, function($word) { return !empty(trim($word)); });
+    $words = array_values($words);
+    
+    if (count($words) >= 2) {
+        return strtoupper(substr($words[0], 0, 1) . substr($words[count($words) - 1], 0, 1));
+    } else {
+        return strtoupper(substr($full_name, 0, 2));
     }
 }
 
@@ -125,36 +139,93 @@ if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQ
     
     $tasks_html = '';
     if (empty($tasks)) {
-        $tasks_html = '<tr><td colspan="8" style="text-align: center; color: #999;">No tasks assigned to you</td></tr>';
+        $tasks_html = '<tr><td colspan="7" class="px-6 py-12 text-center text-gray-500"><i class="fas fa-tasks text-4xl text-gray-300 mb-3 block"></i><p>No tasks assigned to you</p></td></tr>';
     } else {
         foreach ($tasks as $task) {
-            $due_date = formatDate($task['due_date']);
-            $due_date_html = $due_date;
-            $row_style = '';
-            if ($task['due_date'] && strtotime($task['due_date']) < time() && $task['status'] != 'Done') {
-                $due_date_html = '<span style="color: #e74c3c; font-weight: 600;">' . $due_date . ' ⚠</span>';
-                $row_style = 'style="background-color: #fff5f5;"';
+            // Get icon for task type
+            $type_icon = 'fa-tasks';
+            $type_color = '#14b8a6';
+            if ($task['type'] == 'Bug') {
+                $type_icon = 'fa-bug';
+                $type_color = '#e74c3c';
+            } elseif ($task['type'] == 'Improvement') {
+                $type_icon = 'fa-lightbulb';
+                $type_color = '#f39c12';
             }
             
-            $tasks_html .= '<tr ' . $row_style . '>';
-            $tasks_html .= '<td><strong>' . htmlspecialchars($task['task_id']) . '</strong></td>';
-            $tasks_html .= '<td>' . htmlspecialchars($task['title']) . '</td>';
-            $tasks_html .= '<td>' . htmlspecialchars($task['project_name'] ?? '-') . '</td>';
-            $tasks_html .= '<td>' . htmlspecialchars($task['type']) . '</td>';
-            $tasks_html .= '<td><span class="badge priority-' . strtolower($task['priority']) . '">' . htmlspecialchars($task['priority']) . '</span></td>';
-            $tasks_html .= '<td>';
-            $tasks_html .= '<form method="POST" action="" style="display: inline-block;">';
+            // Priority badge
+            $priority_lower = strtolower($task['priority']);
+            $priority_colors = [
+                'high' => ['bg' => 'bg-red-100', 'text' => 'text-red-800', 'icon' => 'fa-exclamation-circle', 'icon_color' => 'text-red-600'],
+                'medium' => ['bg' => 'bg-yellow-100', 'text' => 'text-yellow-800', 'icon' => 'fa-exclamation-triangle', 'icon_color' => 'text-yellow-600'],
+                'low' => ['bg' => 'bg-green-100', 'text' => 'text-green-800', 'icon' => 'fa-check-circle', 'icon_color' => 'text-green-600']
+            ];
+            $priority_style = $priority_colors[$priority_lower] ?? $priority_colors['low'];
+            
+            // Status badge
+            $status_lower = strtolower(str_replace(' ', '-', $task['status']));
+            $status_colors = [
+                'done' => ['bg' => 'bg-green-100', 'text' => 'text-green-800', 'icon' => 'fa-check-circle', 'icon_color' => 'text-green-600'],
+                'in-progress' => ['bg' => 'bg-blue-100', 'text' => 'text-blue-800', 'icon' => 'fa-spinner', 'icon_color' => 'text-blue-600'],
+                'to-do' => ['bg' => 'bg-gray-100', 'text' => 'text-gray-800', 'icon' => 'fa-clock', 'icon_color' => 'text-gray-600']
+            ];
+            $status_style = $status_colors[$status_lower] ?? $status_colors['to-do'];
+            
+            // Due date badge
+            $due_date = $task['due_date'];
+            $due_date_colors = [
+                'overdue' => ['bg' => 'bg-red-100', 'text' => 'text-red-800', 'icon' => 'fa-exclamation-triangle', 'icon_color' => 'text-red-600'],
+                'upcoming' => ['bg' => 'bg-yellow-100', 'text' => 'text-yellow-800', 'icon' => 'fa-calendar-alt', 'icon_color' => 'text-yellow-600'],
+                'normal' => ['bg' => 'bg-gray-100', 'text' => 'text-gray-800', 'icon' => 'fa-calendar', 'icon_color' => 'text-gray-600'],
+                'nodate' => ['bg' => 'bg-gray-50', 'text' => 'text-gray-500', 'icon' => 'fa-calendar-times', 'icon_color' => 'text-gray-400']
+            ];
+            
+            if (!$due_date) {
+                $due_date_style = $due_date_colors['nodate'];
+                $due_date_display = 'No due date';
+            } elseif ($task['status'] == 'Done') {
+                $due_date_style = $due_date_colors['normal'];
+                $due_date_display = formatDate($due_date);
+            } elseif (strtotime($due_date) < time()) {
+                $due_date_style = $due_date_colors['overdue'];
+                $due_date_display = formatDate($due_date);
+            } elseif (strtotime($due_date) <= strtotime('+3 days')) {
+                $due_date_style = $due_date_colors['upcoming'];
+                $due_date_display = formatDate($due_date);
+            } else {
+                $due_date_style = $due_date_colors['normal'];
+                $due_date_display = formatDate($due_date);
+            }
+            
+            $tasks_html .= '<tr class="hover:bg-blue-50 transition-colors" style="transition: background-color 0.2s ease;">';
+            $tasks_html .= '<td class="px-6 py-4 whitespace-nowrap" style="cursor: pointer;" onclick="window.location.href=\'task_view?id=' . $task['id'] . '\'">';
+            $tasks_html .= '<div class="flex items-center gap-2">';
+            $tasks_html .= '<span class="font-semibold text-gray-900">' . htmlspecialchars($task['task_id']) . '</span>';
+            $tasks_html .= '<i class="fas ' . $type_icon . ' text-sm" style="color: ' . $type_color . ';" title="' . htmlspecialchars($task['type']) . '"></i>';
+            $tasks_html .= '</div></td>';
+            $tasks_html .= '<td class="px-6 py-4" style="cursor: pointer;" onclick="window.location.href=\'task_view?id=' . $task['id'] . '\'">';
+            $tasks_html .= '<div class="text-sm text-gray-900 font-medium">' . htmlspecialchars($task['title']) . '</div></td>';
+            $tasks_html .= '<td class="px-6 py-4"><div class="text-sm text-gray-600">' . htmlspecialchars($task['project_name'] ?? '-') . '</div></td>';
+            $tasks_html .= '<td class="px-6 py-4 whitespace-nowrap text-center">';
+            $tasks_html .= '<span class="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full ' . $priority_style['bg'] . ' ' . $priority_style['text'] . '">';
+            $tasks_html .= '<i class="fas ' . $priority_style['icon'] . ' ' . $priority_style['icon_color'] . ' text-xs"></i>';
+            $tasks_html .= htmlspecialchars($task['priority']) . '</span></td>';
+            $tasks_html .= '<td class="px-6 py-4 whitespace-nowrap text-center">';
+            $tasks_html .= '<form method="POST" action="" style="display: inline-block; margin: 0;">';
             $tasks_html .= '<input type="hidden" name="task_id" value="' . $task['id'] . '">';
-            $tasks_html .= '<select name="status" onchange="this.form.submit()" style="padding: 4px; border: 1px solid #ddd; border-radius: 4px; font-size: 12px;">';
+            $tasks_html .= '<select name="status" onchange="this.form.submit()" class="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full ' . $status_style['bg'] . ' ' . $status_style['text'] . ' border-0 cursor-pointer" style="background: ' . ($status_style['bg'] == 'bg-green-100' ? '#d1fae5' : ($status_style['bg'] == 'bg-blue-100' ? '#dbeafe' : '#f3f4f6')) . '; color: ' . ($status_style['text'] == 'text-green-800' ? '#065f46' : ($status_style['text'] == 'text-blue-800' ? '#1e40af' : '#374151')) . '; padding: 4px 12px; font-size: 12px;">';
             $tasks_html .= '<option value="To Do"' . ($task['status'] == 'To Do' ? ' selected' : '') . '>To Do</option>';
             $tasks_html .= '<option value="In Progress"' . ($task['status'] == 'In Progress' ? ' selected' : '') . '>In Progress</option>';
             $tasks_html .= '<option value="Done"' . ($task['status'] == 'Done' ? ' selected' : '') . '>Done</option>';
             $tasks_html .= '</select>';
-            $tasks_html .= '<input type="hidden" name="update_status" value="1">';
-            $tasks_html .= '</form>';
-            $tasks_html .= '</td>';
-            $tasks_html .= '<td>' . $due_date_html . '</td>';
-            $tasks_html .= '<td><a href="task_view.php?id=' . $task['id'] . '" class="btn btn-sm btn-primary" title="View"><i class="fas fa-eye"></i></a></td>';
+            $tasks_html .= '<input type="hidden" name="update_status" value="1"></form></td>';
+            $tasks_html .= '<td class="px-6 py-4 whitespace-nowrap text-center">';
+            $tasks_html .= '<span class="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full ' . $due_date_style['bg'] . ' ' . $due_date_style['text'] . '">';
+            $tasks_html .= '<i class="fas ' . $due_date_style['icon'] . ' ' . $due_date_style['icon_color'] . ' text-xs"></i>';
+            $tasks_html .= htmlspecialchars($due_date_display) . '</span></td>';
+            $tasks_html .= '<td class="px-6 py-4 whitespace-nowrap text-center">';
+            $tasks_html .= '<a href="task_view?id=' . $task['id'] . '" class="btn btn-sm btn-primary" title="View" style="padding: 6px 10px; background: #14b8a6; color: white; border: none; border-radius: 6px; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; transition: all 0.2s;">';
+            $tasks_html .= '<i class="fas fa-eye"></i></a></td>';
             $tasks_html .= '</tr>';
         }
     }
@@ -203,129 +274,222 @@ function renderCustomMultiselect($name, $options, $selected_values = [], $search
 include 'includes/header.php';
 ?>
 
-<div class="page-header">
-    <h1 class="page-title">Assigned to Me</h1>
-    <button class="btn btn-secondary" id="toggleFiltersBtn" title="Toggle Filters"><i class="fas fa-filter"></i></button>
-</div>
-
-<?php if ($message): ?>
-    <div class="alert alert-success"><?php echo htmlspecialchars($message); ?></div>
-<?php endif; ?>
-
-<?php if ($error): ?>
-    <div class="alert alert-error"><?php echo htmlspecialchars($error); ?></div>
-<?php endif; ?>
-
-<!-- Statistics -->
-<div class="stats-grid">
-    <div class="stat-card">
-        <div class="stat-value"><?php echo $total_tasks; ?></div>
-        <div class="stat-label">Total Tasks</div>
-    </div>
-    <div class="stat-card danger">
-        <div class="stat-value"><?php echo $overdue_tasks; ?></div>
-        <div class="stat-label">Overdue Tasks</div>
-    </div>
-    <div class="stat-card warning">
-        <div class="stat-value"><?php echo $status_counts['To Do']; ?></div>
-        <div class="stat-label">To Do</div>
-    </div>
-    <div class="stat-card info">
-        <div class="stat-value"><?php echo $status_counts['In Progress']; ?></div>
-        <div class="stat-label">In Progress</div>
-    </div>
-    <div class="stat-card success">
-        <div class="stat-value"><?php echo $status_counts['Done']; ?></div>
-        <div class="stat-label">Done</div>
-    </div>
-</div>
-
-<!-- Search and Filters -->
-<div class="search-filters" id="searchFilters" style="display: none;">
-    <form method="GET" action="" id="filterForm">
-        <div class="filter-row" style="grid-template-columns: 2fr 1fr 1fr;">
-            <div class="filter-group">
-                <label>Search</label>
-                <input type="text" name="search" id="searchInput" placeholder="Search by title..." value="<?php echo htmlspecialchars($search); ?>">
-            </div>
-            <div class="filter-group">
-                <label>Status</label>
-                <?php 
-                $status_options = ['To Do' => 'To Do', 'In Progress' => 'In Progress', 'Done' => 'Done'];
-                echo renderCustomMultiselect('status', $status_options, $filter_status);
-                ?>
-            </div>
-            <div class="filter-group">
-                <label>Priority</label>
-                <?php 
-                $priority_options = ['Low' => 'Low', 'Medium' => 'Medium', 'High' => 'High'];
-                echo renderCustomMultiselect('priority', $priority_options, $filter_priority);
-                ?>
-            </div>
+<div style="width: 100%; padding: 15px;">
+    <!-- Page Header -->
+    <div class="flex items-center justify-between mb-6">
+        <div class="flex items-center gap-3">
+            <a href="dashboard" class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-2 rounded-lg font-medium transition-colors duration-200 flex items-center justify-center shadow-sm hover:shadow-md" title="Back to Dashboard" style="min-width: 40px; min-height: 40px;">
+                <i class="fas fa-arrow-left"></i>
+            </a>
+            <h1 class="text-2xl md:text-3xl font-semibold text-gray-900 page-title">
+                My Tasks
+            </h1>
         </div>
-    </form>
-</div>
+    </div>
 
-<div class="table-container">
-    <table>
-        <thead>
-            <tr>
-                <th>Task ID</th>
-                <th>Title</th>
-                <th>Project</th>
-                <th>Type</th>
-                <th>Priority</th>
-                <th>Status</th>
-                <th>Due Date</th>
-                <th>Actions</th>
-            </tr>
-        </thead>
-        <tbody>
-            <?php if (empty($tasks)): ?>
-                <tr>
-                    <td colspan="8" style="text-align: center; color: #999;">No tasks assigned to you</td>
-                </tr>
-            <?php else: ?>
-                <?php foreach ($tasks as $task): ?>
-                    <tr style="<?php echo ($task['due_date'] && strtotime($task['due_date']) < time() && $task['status'] != 'Done') ? 'background-color: #fff5f5;' : ''; ?>">
-                        <td><strong><?php echo htmlspecialchars($task['task_id']); ?></strong></td>
-                        <td><?php echo htmlspecialchars($task['title']); ?></td>
-                        <td><?php echo htmlspecialchars($task['project_name'] ?? '-'); ?></td>
-                        <td><?php echo htmlspecialchars($task['type']); ?></td>
-                        <td>
-                            <span class="badge priority-<?php echo strtolower($task['priority']); ?>">
-                                <?php echo htmlspecialchars($task['priority']); ?>
-                            </span>
-                        </td>
-                        <td>
-                            <form method="POST" action="" style="display: inline-block;">
-                                <input type="hidden" name="task_id" value="<?php echo $task['id']; ?>">
-                                <select name="status" onchange="this.form.submit()" style="padding: 4px; border: 1px solid #ddd; border-radius: 4px; font-size: 12px;">
-                                    <option value="To Do" <?php echo $task['status'] == 'To Do' ? 'selected' : ''; ?>>To Do</option>
-                                    <option value="In Progress" <?php echo $task['status'] == 'In Progress' ? 'selected' : ''; ?>>In Progress</option>
-                                    <option value="Done" <?php echo $task['status'] == 'Done' ? 'selected' : ''; ?>>Done</option>
-                                </select>
-                                <input type="hidden" name="update_status" value="1">
-                            </form>
-                        </td>
-                        <td>
-                            <?php 
-                            $due_date = formatDate($task['due_date']);
-                            if ($task['due_date'] && strtotime($task['due_date']) < time() && $task['status'] != 'Done') {
-                                echo '<span style="color: #e74c3c; font-weight: 600;">' . $due_date . ' ⚠</span>';
+    <?php if ($message): ?>
+        <div class="mb-4 bg-green-50 border border-green-200 text-green-800 px-4 py-3 rounded-lg flex items-center gap-2">
+            <i class="fas fa-check-circle"></i>
+            <span><?php echo htmlspecialchars($message); ?></span>
+        </div>
+    <?php endif; ?>
+
+    <?php if ($error): ?>
+        <div class="mb-4 bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-lg flex items-center gap-2">
+            <i class="fas fa-exclamation-circle"></i>
+            <span><?php echo htmlspecialchars($error); ?></span>
+        </div>
+    <?php endif; ?>
+
+    <!-- Task Status Filters -->
+    <div class="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-6">
+        <div class="flex items-center gap-2 flex-wrap">
+            <?php 
+            $status_counts = [
+                'All' => intval($task_stats['total_tasks']),
+                'To Do' => intval($task_stats['todo_count']),
+                'In Progress' => intval($task_stats['inprogress_count']),
+                'Done' => intval($task_stats['done_count'])
+            ];
+            
+            $status_colors = [
+                'All' => '#6c757d',
+                'To Do' => '#ffc107',
+                'In Progress' => '#17a2b8',
+                'Done' => '#28a745'
+            ];
+            
+            $status_icons = [
+                'All' => 'fa-tasks',
+                'To Do' => 'fa-clock',
+                'In Progress' => 'fa-spinner',
+                'Done' => 'fa-check-circle'
+            ];
+            
+            foreach ($status_counts as $status => $count):
+                $is_active = (empty($filter_status) && $status == 'All') || (!empty($filter_status) && in_array($status, $filter_status));
+                $filter_url = 'my_tasks?';
+                $url_params = [];
+                // Set status filter (or remove if All is selected)
+                if ($status != 'All') {
+                    $url_params['status'] = $status;
+                }
+                // Preserve priority filter if exists
+                if (!empty($filter_priority)) {
+                    $url_params['priority'] = $filter_priority;
+                }
+                // Preserve search if exists
+                if (!empty($search)) {
+                    $url_params['search'] = $search;
+                }
+                $filter_url .= http_build_query($url_params);
+            ?>
+                <a href="<?php echo htmlspecialchars($filter_url); ?>" 
+                   class="inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold transition-all duration-200 <?php echo $is_active ? 'text-white shadow-md' : 'bg-white text-gray-700 hover:text-white border-2'; ?>"
+                   style="background: <?php echo $is_active ? $status_colors[$status] : '#fff'; ?>; border-color: <?php echo $status_colors[$status]; ?>;"
+                   onmouseover="this.style.background='<?php echo $status_colors[$status]; ?>'; this.style.color='#fff';"
+                   onmouseout="this.style.background='<?php echo $is_active ? $status_colors[$status] : '#fff'; ?>'; this.style.color='<?php echo $is_active ? '#fff' : '#333'; ?>';"
+                   title="Filter by <?php echo htmlspecialchars($status); ?>">
+                    <i class="fas <?php echo $status_icons[$status]; ?>"></i>
+                    <span><?php echo htmlspecialchars($status); ?></span>
+                    <span class="px-2 py-0.5 rounded-full text-xs font-bold <?php echo $is_active ? 'bg-white bg-opacity-30' : ''; ?>" style="background: <?php echo $is_active ? 'rgba(255,255,255,0.3)' : $status_colors[$status]; ?>; color: #fff;">
+                        <?php echo $count; ?>
+                    </span>
+                </a>
+            <?php endforeach; ?>
+        </div>
+    </div>
+
+    <!-- Tasks Table -->
+    <div class="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+        <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-gray-200">
+                <thead style="background-color: #1e293b;">
+                    <tr>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-white uppercase tracking-wider">Task ID</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-white uppercase tracking-wider">Title</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-white uppercase tracking-wider">Project</th>
+                        <th class="px-6 py-3 text-center text-xs font-medium text-white uppercase tracking-wider" style="width: 120px;">Priority</th>
+                        <th class="px-6 py-3 text-center text-xs font-medium text-white uppercase tracking-wider" style="width: 140px;">Status</th>
+                        <th class="px-6 py-3 text-center text-xs font-medium text-white uppercase tracking-wider" style="width: 150px;">Due Date</th>
+                        <th class="px-6 py-3 text-center text-xs font-medium text-white uppercase tracking-wider" style="width: 80px;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody class="bg-white divide-y divide-gray-200">
+                    <?php if (empty($tasks)): ?>
+                        <tr>
+                            <td colspan="7" class="px-6 py-12 text-center text-gray-500">
+                                <i class="fas fa-tasks text-4xl text-gray-300 mb-3 block"></i>
+                                <p>No tasks assigned to you</p>
+                            </td>
+                        </tr>
+                    <?php else: ?>
+                        <?php foreach ($tasks as $task): ?>
+                            <?php
+                            // Get icon for task type
+                            $type_icon = 'fa-tasks';
+                            $type_color = '#14b8a6';
+                            if ($task['type'] == 'Bug') {
+                                $type_icon = 'fa-bug';
+                                $type_color = '#e74c3c';
+                            } elseif ($task['type'] == 'Improvement') {
+                                $type_icon = 'fa-lightbulb';
+                                $type_color = '#f39c12';
+                            }
+                            
+                            // Priority badge
+                            $priority_lower = strtolower($task['priority']);
+                            $priority_colors = [
+                                'high' => ['bg' => 'bg-red-100', 'text' => 'text-red-800', 'icon' => 'fa-exclamation-circle', 'icon_color' => 'text-red-600'],
+                                'medium' => ['bg' => 'bg-yellow-100', 'text' => 'text-yellow-800', 'icon' => 'fa-exclamation-triangle', 'icon_color' => 'text-yellow-600'],
+                                'low' => ['bg' => 'bg-green-100', 'text' => 'text-green-800', 'icon' => 'fa-check-circle', 'icon_color' => 'text-green-600']
+                            ];
+                            $priority_style = $priority_colors[$priority_lower] ?? $priority_colors['low'];
+                            
+                            // Status badge
+                            $status_lower = strtolower(str_replace(' ', '-', $task['status']));
+                            $status_colors = [
+                                'done' => ['bg' => 'bg-green-100', 'text' => 'text-green-800', 'icon' => 'fa-check-circle', 'icon_color' => 'text-green-600'],
+                                'in-progress' => ['bg' => 'bg-blue-100', 'text' => 'text-blue-800', 'icon' => 'fa-spinner', 'icon_color' => 'text-blue-600'],
+                                'to-do' => ['bg' => 'bg-gray-100', 'text' => 'text-gray-800', 'icon' => 'fa-clock', 'icon_color' => 'text-gray-600']
+                            ];
+                            $status_style = $status_colors[$status_lower] ?? $status_colors['to-do'];
+                            
+                            // Due date badge
+                            $due_date = $task['due_date'];
+                            $due_date_colors = [
+                                'overdue' => ['bg' => 'bg-red-100', 'text' => 'text-red-800', 'icon' => 'fa-exclamation-triangle', 'icon_color' => 'text-red-600'],
+                                'upcoming' => ['bg' => 'bg-yellow-100', 'text' => 'text-yellow-800', 'icon' => 'fa-calendar-alt', 'icon_color' => 'text-yellow-600'],
+                                'normal' => ['bg' => 'bg-gray-100', 'text' => 'text-gray-800', 'icon' => 'fa-calendar', 'icon_color' => 'text-gray-600'],
+                                'nodate' => ['bg' => 'bg-gray-50', 'text' => 'text-gray-500', 'icon' => 'fa-calendar-times', 'icon_color' => 'text-gray-400']
+                            ];
+                            
+                            if (!$due_date) {
+                                $due_date_style = $due_date_colors['nodate'];
+                                $due_date_display = 'No due date';
+                            } elseif ($task['status'] == 'Done') {
+                                $due_date_style = $due_date_colors['normal'];
+                                $due_date_display = formatDate($due_date);
+                            } elseif (strtotime($due_date) < time()) {
+                                $due_date_style = $due_date_colors['overdue'];
+                                $due_date_display = formatDate($due_date);
+                            } elseif (strtotime($due_date) <= strtotime('+3 days')) {
+                                $due_date_style = $due_date_colors['upcoming'];
+                                $due_date_display = formatDate($due_date);
                             } else {
-                                echo $due_date;
+                                $due_date_style = $due_date_colors['normal'];
+                                $due_date_display = formatDate($due_date);
                             }
                             ?>
-                        </td>
-                        <td>
-                            <a href="task_view.php?id=<?php echo $task['id']; ?>" class="btn btn-sm btn-primary" title="View"><i class="fas fa-eye"></i></a>
-                        </td>
-                    </tr>
-                <?php endforeach; ?>
-            <?php endif; ?>
-        </tbody>
-    </table>
+                            <tr class="hover:bg-blue-50 transition-colors" style="transition: background-color 0.2s ease;">
+                                <td class="px-6 py-4 whitespace-nowrap" style="cursor: pointer;" onclick="window.location.href='task_view?id=<?php echo $task['id']; ?>'">
+                                    <div class="flex items-center gap-2">
+                                        <span class="font-semibold text-gray-900"><?php echo htmlspecialchars($task['task_id']); ?></span>
+                                        <i class="fas <?php echo $type_icon; ?> text-sm" style="color: <?php echo $type_color; ?>;" title="<?php echo htmlspecialchars($task['type']); ?>"></i>
+                                    </div>
+                                </td>
+                                <td class="px-6 py-4" style="cursor: pointer;" onclick="window.location.href='task_view?id=<?php echo $task['id']; ?>'">
+                                    <div class="text-sm text-gray-900 font-medium"><?php echo htmlspecialchars($task['title']); ?></div>
+                                </td>
+                                <td class="px-6 py-4">
+                                    <div class="text-sm text-gray-600"><?php echo htmlspecialchars($task['project_name'] ?? '-'); ?></div>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-center">
+                                    <span class="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full <?php echo $priority_style['bg'] . ' ' . $priority_style['text']; ?>">
+                                        <i class="fas <?php echo $priority_style['icon']; ?> <?php echo $priority_style['icon_color']; ?> text-xs"></i>
+                                        <?php echo htmlspecialchars($task['priority']); ?>
+                                    </span>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-center">
+                                    <form method="POST" action="" style="display: inline-block; margin: 0;">
+                                        <input type="hidden" name="task_id" value="<?php echo $task['id']; ?>">
+                                        <select name="status" onchange="this.form.submit()" 
+                                                style="background: <?php echo $status_style['bg'] == 'bg-green-100' ? '#d1fae5' : ($status_style['bg'] == 'bg-blue-100' ? '#dbeafe' : '#f3f4f6'); ?>; color: <?php echo $status_style['text'] == 'text-green-800' ? '#065f46' : ($status_style['text'] == 'text-blue-800' ? '#1e40af' : '#374151'); ?>; padding: 4px 12px; font-size: 12px; border: none; border-radius: 9999px; cursor: pointer; font-weight: 500; outline: none;">
+                                            <option value="To Do" <?php echo $task['status'] == 'To Do' ? 'selected' : ''; ?>>To Do</option>
+                                            <option value="In Progress" <?php echo $task['status'] == 'In Progress' ? 'selected' : ''; ?>>In Progress</option>
+                                            <option value="Done" <?php echo $task['status'] == 'Done' ? 'selected' : ''; ?>>Done</option>
+                                        </select>
+                                        <input type="hidden" name="update_status" value="1">
+                                    </form>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-center">
+                                    <span class="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full <?php echo $due_date_style['bg'] . ' ' . $due_date_style['text']; ?>">
+                                        <i class="fas <?php echo $due_date_style['icon']; ?> <?php echo $due_date_style['icon_color']; ?> text-xs"></i>
+                                        <?php echo htmlspecialchars($due_date_display); ?>
+                                    </span>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-center">
+                                    <a href="task_view?id=<?php echo $task['id']; ?>" class="btn btn-sm btn-primary" title="View" style="padding: 6px 10px; background: #14b8a6; color: white; border: none; border-radius: 6px; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; transition: all 0.2s;">
+                                        <i class="fas fa-eye"></i>
+                                    </a>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
 </div>
 
 <?php include 'includes/footer.php'; ?>

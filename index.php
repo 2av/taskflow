@@ -3,7 +3,7 @@ require_once 'config/config.php';
 
 // Redirect if already logged in
 if (isLoggedIn()) {
-    header('Location: dashboard.php');
+    header('Location: dashboard');
     exit();
 }
 
@@ -33,7 +33,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 $_SESSION['email'] = $user['email'];
                 $_SESSION['organization_id'] = $user['organization_id'] ?? null;
                 
-                header('Location: dashboard.php');
+                header('Location: dashboard');
                 exit();
             } else {
                 $error = 'Invalid username or password';
@@ -82,7 +82,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             </form>
             
             <div style="text-align: center; margin-top: 20px;">
-                <a href="register_organization.php" style="color: #667eea; text-decoration: none;">Register Your Organization</a>
+                <a href="register_organization" style="color: #667eea; text-decoration: none;">Register Your Organization</a>
             </div>
         </div>
     </div>

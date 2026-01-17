@@ -56,7 +56,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['create_project'])) {
             
             $message = 'Project created successfully';
             // Redirect to show success message
-            header('Location: projects.php?created=1');
+            header('Location: projects?created=1');
             exit();
         } else {
             $error = 'Error creating project: ' . $conn->error;
@@ -94,7 +94,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_project'])) {
         }
         $message = 'Project updated successfully';
         // Redirect to close modal and show success message
-        header('Location: projects.php?updated=1');
+        header('Location: projects?updated=1');
         exit();
     } else {
         $error = 'Error updating project';
@@ -211,60 +211,124 @@ if (isset($_GET['updated'])) {
 include 'includes/header.php';
 ?>
 
-<div class="page-header">
-    <h1 class="page-title">Project Management</h1>
-    <button class="btn btn-primary modal-trigger" data-modal="projectModal" title="Add New Project"><i class="fas fa-plus"></i></button>
-</div>
+<div style="width: 100%; padding: 20px;">
+    <!-- Page Header -->
+    <div class="flex items-center justify-between mb-6" style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px;">
+        <div>
+            <h1 class="text-3xl font-semibold text-gray-900" style="font-size: 28px; font-weight: 600; color: #1e293b; margin: 0;">Projects</h1>
+            <p class="text-gray-500 mt-1" style="color: #64748b; margin-top: 4px; font-size: 14px;">Manage and track all your projects</p>
+        </div>
+        <button class="btn btn-primary modal-trigger" data-modal="projectModal" title="Add New Project" style="display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px; background: linear-gradient(135deg, #14b8a6 0%, #0d9488 100%); color: white; border: none; border-radius: 8px; font-weight: 500; cursor: pointer; transition: all 0.2s; box-shadow: 0 2px 4px rgba(20, 184, 166, 0.3);">
+            <i class="fas fa-plus"></i>
+            <span>Add Project</span>
+        </button>
+    </div>
 
-<?php if ($message): ?>
-    <div class="alert alert-success"><?php echo htmlspecialchars($message); ?></div>
-<?php endif; ?>
+    <?php if ($message): ?>
+        <div class="alert alert-success" style="background: #d1fae5; border: 1px solid #10b981; color: #065f46; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; display: flex; align-items: center; gap: 8px;">
+            <i class="fas fa-check-circle"></i>
+            <span><?php echo htmlspecialchars($message); ?></span>
+        </div>
+    <?php endif; ?>
 
-<?php if ($error): ?>
-    <div class="alert alert-error"><?php echo htmlspecialchars($error); ?></div>
-<?php endif; ?>
+    <?php if ($error): ?>
+        <div class="alert alert-error" style="background: #fee2e2; border: 1px solid #ef4444; color: #991b1b; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; display: flex; align-items: center; gap: 8px;">
+            <i class="fas fa-exclamation-circle"></i>
+            <span><?php echo htmlspecialchars($error); ?></span>
+        </div>
+    <?php endif; ?>
 
-<div class="table-container">
-    <table>
-        <thead>
-            <tr>
-                <th>ID</th>
-                <th>Name</th>
-                <th>Description</th>
-                <th>Status</th>
-                <th>Project Manager</th>
-                <th>Tasks</th>
-                <th>Created</th>
-                <th>Actions</th>
-            </tr>
-        </thead>
-        <tbody>
-            <?php if (empty($projects)): ?>
+    <!-- Projects Table -->
+    <div class="table-container">
+        <table>
+            <thead>
                 <tr>
-                    <td colspan="8" style="text-align: center; color: #999;">No projects found</td>
+                    <th>Name</th>
+                    <th>Description</th>
+                    <th>Status</th>
+                    <th>Project Manager</th>
+                    <th style="text-align: center;">Tasks</th>
+                    <th>Created</th>
+                    <th style="text-align: center;">Actions</th>
                 </tr>
-            <?php else: ?>
-                <?php foreach ($projects as $project): ?>
+            </thead>
+            <tbody>
+                <?php if (empty($projects)): ?>
                     <tr>
-                        <td><?php echo $project['id']; ?></td>
-                        <td><strong><?php echo htmlspecialchars($project['name']); ?></strong></td>
-                        <td><?php echo htmlspecialchars(substr($project['description'], 0, 50)) . (strlen($project['description']) > 50 ? '...' : ''); ?></td>
-                        <td>
-                            <span class="badge badge-info"><?php echo htmlspecialchars($project['status']); ?></span>
-                        </td>
-                        <td><?php echo htmlspecialchars($project['pm_name'] ?? '-'); ?></td>
-                        <td><?php echo $project['task_count']; ?></td>
-                        <td><?php echo formatDate($project['created_at']); ?></td>
-                        <td>
-                            <a href="tasks.php?project_id=<?php echo $project['id']; ?>" class="btn btn-sm btn-primary" title="View Tasks"><i class="fas fa-eye"></i></a>
-                            <a href="?edit=<?php echo $project['id']; ?>" class="btn btn-sm btn-warning" title="Edit"><i class="fas fa-edit"></i></a>
-                            <a href="?delete=<?php echo $project['id']; ?>" class="btn btn-sm btn-danger btn-delete" title="Delete"><i class="fas fa-trash"></i></a>
+                        <td colspan="7" style="text-align: center; padding: 40px 20px; color: #94a3b8;">
+                            <i class="fas fa-folder-open" style="font-size: 48px; margin-bottom: 12px; opacity: 0.3; display: block;"></i>
+                            <p style="font-size: 16px; margin: 0;">No projects found</p>
+                            <p style="font-size: 14px; margin-top: 8px; color: #cbd5e1;">Create your first project to get started</p>
                         </td>
                     </tr>
-                <?php endforeach; ?>
-            <?php endif; ?>
-        </tbody>
-    </table>
+                <?php else: ?>
+                    <?php foreach ($projects as $project): ?>
+                        <tr>
+                            <td>
+                                <strong style="color: #1e293b; font-size: 15px;"><?php echo htmlspecialchars($project['name']); ?></strong>
+                            </td>
+                            <td style="color: #64748b; max-width: 300px;">
+                                <?php 
+                                $desc = htmlspecialchars($project['description'] ?? '');
+                                if (!empty($desc)) {
+                                    echo strlen($desc) > 60 ? substr($desc, 0, 60) . '...' : $desc;
+                                } else {
+                                    echo '<span style="color: #cbd5e1; font-style: italic;">No description</span>';
+                                }
+                                ?>
+                            </td>
+                            <td>
+                                <?php 
+                                $status = htmlspecialchars($project['status']);
+                                $status_class = strtolower(str_replace(' ', '-', $status));
+                                $status_colors = [
+                                    'active' => ['bg' => '#d1fae5', 'text' => '#065f46', 'border' => '#10b981'],
+                                    'on-hold' => ['bg' => '#fef3c7', 'text' => '#92400e', 'border' => '#f59e0b'],
+                                    'completed' => ['bg' => '#dbeafe', 'text' => '#1e40af', 'border' => '#3b82f6']
+                                ];
+                                $color = $status_colors[$status_class] ?? ['bg' => '#f3f4f6', 'text' => '#374151', 'border' => '#9ca3af'];
+                                ?>
+                                <span class="badge" style="display: inline-flex; align-items: center; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 500; background: <?php echo $color['bg']; ?>; color: <?php echo $color['text']; ?>; border: 1px solid <?php echo $color['border']; ?>;">
+                                    <?php echo $status; ?>
+                                </span>
+                            </td>
+                            <td style="color: #475569;">
+                                <?php 
+                                if (!empty($project['pm_name'])) {
+                                    echo htmlspecialchars($project['pm_name']);
+                                } else {
+                                    echo '<span style="color: #cbd5e1; font-style: italic;">Unassigned</span>';
+                                }
+                                ?>
+                            </td>
+                            <td style="text-align: center;">
+                                <span style="display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 50%; background: #f0fdfa; color: #14b8a6; font-weight: 600; font-size: 13px; border: 2px solid #ccfbf1;">
+                                    <?php echo $project['task_count']; ?>
+                                </span>
+                            </td>
+                            <td style="color: #64748b; font-size: 13px;">
+                                <i class="fas fa-calendar-alt" style="margin-right: 6px; color: #94a3b8;"></i>
+                                <?php echo formatDate($project['created_at']); ?>
+                            </td>
+                            <td style="text-align: center;">
+                                <div style="display: inline-flex; gap: 6px;">
+                                    <a href="tasks?project_id=<?php echo $project['id']; ?>" class="btn btn-sm btn-primary" title="View Tasks" style="padding: 6px 10px; background: #14b8a6; color: white; border: none; border-radius: 6px; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; transition: all 0.2s;">
+                                        <i class="fas fa-eye"></i>
+                                    </a>
+                                    <a href="?edit=<?php echo $project['id']; ?>" class="btn btn-sm btn-warning" title="Edit" style="padding: 6px 10px; background: #f59e0b; color: white; border: none; border-radius: 6px; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; transition: all 0.2s;">
+                                        <i class="fas fa-edit"></i>
+                                    </a>
+                                    <a href="?delete=<?php echo $project['id']; ?>" class="btn btn-sm btn-danger btn-delete" title="Delete" style="padding: 6px 10px; background: #ef4444; color: white; border: none; border-radius: 6px; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; transition: all 0.2s;">
+                                        <i class="fas fa-trash"></i>
+                                    </a>
+                                </div>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+            </tbody>
+        </table>
+    </div>
 </div>
 
 <!-- Add/Edit Project Modal -->

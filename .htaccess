@@ -1,15 +1,27 @@
 # Prevent directory listing
 Options -Indexes
 
-# Protect config files
-<FilesMatch "^(config|includes)">
-    Order allow,deny
-    Deny from all
-</FilesMatch>
-
-# Enable error reporting (disable in production)
-# php_flag display_errors On
-# php_value error_reporting E_ALL
-
 # Set default charset
 AddDefaultCharset UTF-8
+
+# Enable Rewrite Engine
+RewriteEngine On
+
+# Try to detect if we're in a subdirectory (for shared hosting)
+# If your site is at https://taskflow.ayodhyakashiyatra.com/ (root), comment out RewriteBase
+# If your site is at https://taskflow.ayodhyakashiyatra.com/taskflow/, uncomment and set:
+# RewriteBase /taskflow/
+
+# Remove .php extension from URLs (internal rewrite with query string support)
+# This handles URLs like: /tasks?project_id=1
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME}\.php -f
+RewriteRule ^(.*)$ $1.php [L,QSA]
+
+# Alternative method if above doesn't work (uncomment if needed)
+# RewriteCond %{REQUEST_URI} !^/.*\.php$
+# RewriteCond %{REQUEST_FILENAME} !-d
+# RewriteCond %{REQUEST_FILENAME} !-f
+# RewriteCond %{REQUEST_FILENAME}\.php -f
+# RewriteRule ^(.*)$ $1.php [L,QSA]

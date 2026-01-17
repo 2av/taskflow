@@ -7,7 +7,39 @@ $page_title = 'Dashboard';
 
 $conn = getDBConnection();
 
-// Get projects with task statistics
+// Helper function to format time ago
+function timeAgo($datetime) {
+    if (empty($datetime)) {
+        return 'Never';
+    }
+    
+    $timestamp = strtotime($datetime);
+    $diff = time() - $timestamp;
+    
+    if ($diff < 60) {
+        return 'Just now';
+    } elseif ($diff < 3600) {
+        $mins = floor($diff / 60);
+        return $mins . ($mins == 1 ? ' min' : ' mins') . ' ago';
+    } elseif ($diff < 86400) {
+        $hours = floor($diff / 3600);
+        return $hours . ($hours == 1 ? ' hr' : ' hrs') . ' ago';
+    } elseif ($diff < 604800) {
+        $days = floor($diff / 86400);
+        return $days . ($days == 1 ? ' day' : ' days') . ' ago';
+    } elseif ($diff < 2592000) {
+        $weeks = floor($diff / 604800);
+        return $weeks . ($weeks == 1 ? ' week' : ' weeks') . ' ago';
+    } elseif ($diff < 31536000) {
+        $months = floor($diff / 2592000);
+        return $months . ($months == 1 ? ' month' : ' months') . ' ago';
+    } else {
+        $years = floor($diff / 31536000);
+        return $years . ($years == 1 ? ' year' : ' years') . ' ago';
+    }
+}
+
+// Get projects with task statistics and last activity
 if (isSuperAdmin()) {
     // Super Admin sees all projects
     $projects_query = "
@@ -15,7 +47,11 @@ if (isSuperAdmin()) {
                COUNT(t.id) as total_tasks,
                SUM(CASE WHEN t.status = 'To Do' THEN 1 ELSE 0 END) as todo_count,
                SUM(CASE WHEN t.status = 'In Progress' THEN 1 ELSE 0 END) as inprogress_count,
-               SUM(CASE WHEN t.status = 'Done' THEN 1 ELSE 0 END) as done_count
+               SUM(CASE WHEN t.status = 'Done' THEN 1 ELSE 0 END) as done_count,
+               (SELECT MAX(al.created_at) 
+                FROM activity_logs al 
+                JOIN tasks t2 ON al.task_id = t2.id 
+                WHERE t2.project_id = p.id) as last_activity
         FROM projects p
         LEFT JOIN tasks t ON p.id = t.project_id
         GROUP BY p.id
@@ -30,7 +66,11 @@ if (isSuperAdmin()) {
                COUNT(t.id) as total_tasks,
                SUM(CASE WHEN t.status = 'To Do' THEN 1 ELSE 0 END) as todo_count,
                SUM(CASE WHEN t.status = 'In Progress' THEN 1 ELSE 0 END) as inprogress_count,
-               SUM(CASE WHEN t.status = 'Done' THEN 1 ELSE 0 END) as done_count
+               SUM(CASE WHEN t.status = 'Done' THEN 1 ELSE 0 END) as done_count,
+               (SELECT MAX(al.created_at) 
+                FROM activity_logs al 
+                JOIN tasks t2 ON al.task_id = t2.id 
+                WHERE t2.project_id = p.id) as last_activity
         FROM projects p
         LEFT JOIN tasks t ON p.id = t.project_id
         WHERE p.organization_id = ?
@@ -51,7 +91,11 @@ if (isSuperAdmin()) {
                COUNT(t.id) as total_tasks,
                SUM(CASE WHEN t.status = 'To Do' THEN 1 ELSE 0 END) as todo_count,
                SUM(CASE WHEN t.status = 'In Progress' THEN 1 ELSE 0 END) as inprogress_count,
-               SUM(CASE WHEN t.status = 'Done' THEN 1 ELSE 0 END) as done_count
+               SUM(CASE WHEN t.status = 'Done' THEN 1 ELSE 0 END) as done_count,
+               (SELECT MAX(al.created_at) 
+                FROM activity_logs al 
+                JOIN tasks t2 ON al.task_id = t2.id 
+                WHERE t2.project_id = p.id) as last_activity
         FROM projects p
         LEFT JOIN tasks t ON p.id = t.project_id
         LEFT JOIN project_users pu ON p.id = pu.project_id
@@ -68,7 +112,11 @@ if (isSuperAdmin()) {
                COUNT(t.id) as total_tasks,
                SUM(CASE WHEN t.status = 'To Do' THEN 1 ELSE 0 END) as todo_count,
                SUM(CASE WHEN t.status = 'In Progress' THEN 1 ELSE 0 END) as inprogress_count,
-               SUM(CASE WHEN t.status = 'Done' THEN 1 ELSE 0 END) as done_count
+               SUM(CASE WHEN t.status = 'Done' THEN 1 ELSE 0 END) as done_count,
+               (SELECT MAX(al.created_at) 
+                FROM activity_logs al 
+                JOIN tasks t2 ON al.task_id = t2.id 
+                WHERE t2.project_id = p.id) as last_activity
         FROM projects p
         LEFT JOIN tasks t ON p.id = t.project_id
         LEFT JOIN project_users pu ON p.id = pu.project_id
@@ -109,19 +157,35 @@ include 'includes/header.php';
                 $inprogress = intval($project['inprogress_count']);
                 $progress_percent = $total > 0 ? round(($done / $total) * 100) : 0;
                 ?>
-                <a href="tasks.php?project_id=<?php echo $project['id']; ?>" class="block group">
+                <a href="tasks?project_id=<?php echo $project['id']; ?>" class="block group">
                     <div class="bg-white rounded-xl shadow-sm border border-gray-200 hover:shadow-lg hover:border-teal-300 transition-all duration-300 h-full flex flex-col overflow-hidden">
                         <!-- Card Header -->
-                        <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
-                            <div class="flex items-center gap-3 flex-1 min-w-0">
-                                <i class="fas fa-folder-open text-teal-600 text-xl flex-shrink-0"></i>
-                                <h3 class="text-lg font-semibold text-gray-900 truncate group-hover:text-teal-600 transition-colors">
-                                    <?php echo htmlspecialchars($project['name']); ?>
-                                </h3>
+                        <div class="px-6 py-4 border-b border-gray-100">
+                            <div class="flex items-center justify-between mb-2">
+                                <div class="flex items-center gap-3 flex-1 min-w-0">
+                                    <i class="fas fa-folder-open text-teal-600 text-xl flex-shrink-0"></i>
+                                    <h3 class="text-lg font-semibold text-gray-900 truncate group-hover:text-teal-600 transition-colors">
+                                        <?php echo htmlspecialchars($project['name']); ?>
+                                    </h3>
+                                </div>
+                                <span class="px-2.5 py-1 text-xs font-medium rounded-full bg-blue-100 text-blue-800 flex-shrink-0 ml-2">
+                                    <?php echo htmlspecialchars($project['status']); ?>
+                                </span>
                             </div>
-                            <span class="px-2.5 py-1 text-xs font-medium rounded-full bg-blue-100 text-blue-800 flex-shrink-0 ml-2">
-                                <?php echo htmlspecialchars($project['status']); ?>
-                            </span>
+                            <?php 
+                            $last_activity = $project['last_activity'] ?? null;
+                            if ($last_activity): 
+                            ?>
+                                <div class="flex items-center gap-2 text-xs text-gray-500 mt-1">
+                                    <i class="fas fa-clock text-gray-400"></i>
+                                    <span>Last activity: <?php echo timeAgo($last_activity); ?></span>
+                                </div>
+                            <?php else: ?>
+                                <div class="flex items-center gap-2 text-xs text-gray-400 mt-1">
+                                    <i class="fas fa-clock text-gray-300"></i>
+                                    <span>No activity yet</span>
+                                </div>
+                            <?php endif; ?>
                         </div>
                         
                         <!-- Card Body -->

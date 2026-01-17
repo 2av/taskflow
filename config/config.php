@@ -70,7 +70,7 @@ function isTeamMember() {
 
 function requireLogin() {
     if (!isLoggedIn()) {
-        header('Location: ../index.php');
+        header('Location: ../index');
         exit();
     }
 }
@@ -78,7 +78,7 @@ function requireLogin() {
 function requireAdmin() {
     requireLogin();
     if (!isSuperAdmin() && !isOrgAdmin()) {
-        header('Location: ../dashboard.php');
+        header('Location: ../dashboard');
         exit();
     }
 }
@@ -86,7 +86,7 @@ function requireAdmin() {
 function requireProjectManager() {
     requireLogin();
     if (!isSuperAdmin() && !isOrgAdmin() && !isProjectManager()) {
-        header('Location: ../dashboard.php');
+        header('Location: ../dashboard');
         exit();
     }
 }
@@ -184,7 +184,7 @@ function requireActiveSubscription() {
     $subscription = checkSubscriptionStatus();
     
     if ($subscription['status'] == 'expired' || $subscription['status'] == 'cancelled') {
-        header('Location: subscription.php?expired=1');
+        header('Location: subscription?expired=1');
         exit();
     }
 }
