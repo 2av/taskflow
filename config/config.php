@@ -204,4 +204,9 @@ function requireActiveSubscription() {
         exit();
     }
 }
+
+// Load Cloudinary configuration if available
+if (file_exists(__DIR__ . '/cloudinary.php')) {
+    require_once __DIR__ . '/cloudinary.php';
+}
 ?>

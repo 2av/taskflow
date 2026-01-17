@@ -142,7 +142,15 @@ if (!isset($page_title)) {
                     </div>
                     <div class="profile-dropdown-divider"></div>
                     <div class="profile-dropdown-menu">
+                        <a href="edit_profile" class="profile-dropdown-item">
+                            <i class="fas fa-user-edit"></i>
+                            <span>Edit Profile</span>
+                        </a>
                         <?php if (isOrgAdmin() && !empty($_SESSION['organization_id'])): ?>
+                            <a href="edit_organization" class="profile-dropdown-item">
+                                <i class="fas fa-building"></i>
+                                <span>Edit Organization</span>
+                            </a>
                             <a href="subscription" class="profile-dropdown-item">
                                 <i class="fas fa-credit-card"></i>
                                 <span>Subscription</span>
@@ -204,7 +212,15 @@ if (!isset($page_title)) {
             </button>
         </div>
         <div class="mobile-profile-menu">
+            <a href="edit_profile" class="mobile-profile-item">
+                <i class="fas fa-user-edit"></i>
+                <span>Edit Profile</span>
+            </a>
             <?php if (isOrgAdmin() && !empty($_SESSION['organization_id'])): ?>
+                <a href="edit_organization" class="mobile-profile-item">
+                    <i class="fas fa-building"></i>
+                    <span>Edit Organization</span>
+                </a>
                 <a href="subscription" class="mobile-profile-item">
                     <i class="fas fa-credit-card"></i>
                     <span>Subscription</span>
