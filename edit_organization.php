@@ -34,10 +34,14 @@ if (!$organization) {
     exit();
 }
 
+// Check if email already exists
+$email_exists = !empty($organization['email']);
+
 // Handle organization update
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_organization'])) {
     $name = trim($_POST['name']);
-    $email = trim($_POST['email'] ?? '');
+    // If email already exists, keep the existing one; otherwise use submitted value
+    $email = $email_exists ? $organization['email'] : trim($_POST['email'] ?? '');
     $phone = trim($_POST['phone'] ?? '');
     $address = trim($_POST['address'] ?? '');
     
@@ -48,44 +52,38 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_organization'])
         $error = 'Invalid email format';
     } else {
         // Handle logo upload
-        $logo_url = $organization['logo'] ?? null;
+        $logo_filename = $organization['logo'] ?? null;
         
+        // Check if logo file was uploaded
         if (isset($_FILES['logo']) && $_FILES['logo']['error'] === UPLOAD_ERR_OK) {
-            if (function_exists('uploadImageFromFile')) {
-                $upload_result = uploadImageFromFile($_FILES['logo'], 'taskflow/organizations');
+            // Use local upload system
+            if (function_exists('uploadImageLocal')) {
+                $upload_result = uploadImageLocal($_FILES['logo'], 'organization', 204800); // 200KB max
                 
                 if ($upload_result['success']) {
-                    // Delete old logo from Cloudinary if exists
-                    if ($logo_url && function_exists('deleteFromCloudinary')) {
-                        if (strpos($logo_url, 'cloudinary.com') !== false) {
-                            preg_match('/\/([^\/]+)\/([^\/]+)\.(jpg|png|gif|webp)$/i', $logo_url, $matches);
-                            if (isset($matches[1]) && isset($matches[2])) {
-                                $public_id = $matches[1] . '/' . $matches[2];
-                                deleteFromCloudinary($public_id);
-                            }
-                        }
+                    // Delete old logo if exists
+                    if ($logo_filename && function_exists('deleteImageLocal')) {
+                        deleteImageLocal($logo_filename, 'organization');
                     }
-                    $logo_url = $upload_result['url'];
+                    // Store only GUID filename in database
+                    $logo_filename = $upload_result['filename'];
                 } else {
                     $error = $upload_result['error'] ?? 'Failed to upload logo';
                 }
             } else {
-                // Fallback to local upload
-                $upload_dir = __DIR__ . '/uploads/organizations/';
-                if (!is_dir($upload_dir)) {
-                    mkdir($upload_dir, 0755, true);
-                }
-                
-                $file_extension = pathinfo($_FILES['logo']['name'], PATHINFO_EXTENSION);
-                $new_filename = 'org_' . $organization_id . '_' . time() . '.' . $file_extension;
-                $upload_path = $upload_dir . $new_filename;
-                
-                if (move_uploaded_file($_FILES['logo']['tmp_name'], $upload_path)) {
-                    $logo_url = 'uploads/organizations/' . $new_filename;
-                } else {
-                    $error = 'Failed to upload logo';
-                }
+                $error = 'Upload system not available';
             }
+        } elseif (isset($_FILES['logo']) && $_FILES['logo']['error'] !== UPLOAD_ERR_NO_FILE) {
+            // Handle upload errors
+            $error_messages = [
+                UPLOAD_ERR_INI_SIZE => 'File exceeds 200KB limit',
+                UPLOAD_ERR_FORM_SIZE => 'File exceeds 200KB limit',
+                UPLOAD_ERR_PARTIAL => 'File was only partially uploaded',
+                UPLOAD_ERR_NO_TMP_DIR => 'Missing temporary folder',
+                UPLOAD_ERR_CANT_WRITE => 'Failed to write file to disk',
+                UPLOAD_ERR_EXTENSION => 'A PHP extension stopped the file upload'
+            ];
+            $error = $error_messages[$_FILES['logo']['error']] ?? 'Failed to upload logo';
         }
         
         if (empty($error)) {
@@ -95,17 +93,16 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_organization'])
                 $conn->query("ALTER TABLE organizations ADD COLUMN logo VARCHAR(500) NULL AFTER name");
             }
             
-            // Update organization
-            if ($logo_url) {
-                $update_stmt = $conn->prepare("UPDATE organizations SET name = ?, email = ?, phone = ?, address = ?, logo = ? WHERE id = ?");
-                $update_stmt->bind_param("sssssi", $name, $email, $phone, $address, $logo_url, $organization_id);
-            } else {
-                $update_stmt = $conn->prepare("UPDATE organizations SET name = ?, email = ?, phone = ?, address = ? WHERE id = ?");
-                $update_stmt->bind_param("ssssi", $name, $email, $phone, $address, $organization_id);
-            }
+            // Update organization (store only GUID filename, not full URL)
+            // Always update logo field - if no new logo, keep existing one
+            $update_stmt = $conn->prepare("UPDATE organizations SET name = ?, email = ?, phone = ?, address = ?, logo = ? WHERE id = ?");
+            $update_stmt->bind_param("sssssi", $name, $email, $phone, $address, $logo_filename, $organization_id);
             
             if ($update_stmt->execute()) {
                 $message = 'Organization updated successfully';
+                if ($logo_filename) {
+                    $message .= '. Logo uploaded: ' . $logo_filename;
+                }
                 
                 // Refresh organization data
                 $org_query = $conn->prepare("SELECT * FROM organizations WHERE id = ?");
@@ -258,6 +255,17 @@ include 'includes/header.php';
     box-shadow: 0 0 0 3px var(--blue-light);
 }
 
+.form-group input[readonly] {
+    background: var(--border-color) !important;
+    cursor: not-allowed;
+    opacity: 0.7;
+}
+
+.form-group input[readonly]:focus {
+    border-color: var(--border-color);
+    box-shadow: none;
+}
+
 .form-group textarea {
     resize: vertical;
     min-height: 100px;
@@ -340,33 +348,48 @@ include 'includes/header.php';
     
     <?php if ($error): ?>
         <div class="alert alert-error" style="margin-bottom: 20px; padding: 12px 16px; background: #FEE2E2; color: #991B1B; border-radius: 6px;">
-            <?php echo htmlspecialchars($error); ?>
+            <strong>Error:</strong> <?php echo htmlspecialchars($error); ?>
+            <?php if (isset($_POST['update_organization']) && isset($_FILES['logo'])): ?>
+                <br><small style="margin-top: 8px; display: block;">
+                    File: <?php echo htmlspecialchars($_FILES['logo']['name']); ?><br>
+                    Size: <?php echo number_format($_FILES['logo']['size'] / 1024, 2); ?> KB<br>
+                    Type: <?php echo htmlspecialchars($_FILES['logo']['type']); ?><br>
+                    Error Code: <?php echo $_FILES['logo']['error']; ?>
+                </small>
+            <?php endif; ?>
         </div>
     <?php endif; ?>
     
-    <div class="org-header">
-        <div class="org-logo-section">
-            <div class="org-logo" id="orgLogo">
-                <?php if (!empty($organization['logo'])): ?>
-                    <img src="<?php echo htmlspecialchars($organization['logo']); ?>" alt="Organization Logo">
-                <?php else: ?>
-                    <div class="org-logo-placeholder">
-                        <i class="fas fa-building"></i>
-                    </div>
-                <?php endif; ?>
-            </div>
-            <label for="logoInput" class="org-logo-upload" title="Change Logo">
-                <i class="fas fa-camera"></i>
-                <input type="file" id="logoInput" name="logo" accept="image/*" onchange="previewLogo(this)">
-            </label>
-        </div>
-        <div class="org-info-header">
-            <h1><?php echo htmlspecialchars($organization['name']); ?></h1>
-            <p>Organization Details</p>
-        </div>
-    </div>
     
     <form method="POST" action="" enctype="multipart/form-data">
+        <div class="org-header">
+            <div class="org-logo-section">
+                <div class="org-logo" id="orgLogo">
+                    <?php if (!empty($organization['logo'])): ?>
+                        <?php 
+                        // Get full URL from GUID filename (local storage)
+                        $logo_url = getImageUrl($organization['logo'], 'organization');
+                        ?>
+                        <img src="<?php echo htmlspecialchars($logo_url); ?>" alt="Organization Logo" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                        <div class="org-logo-placeholder" style="display: none;">
+                            <i class="fas fa-building"></i>
+                        </div>
+                    <?php else: ?>
+                        <div class="org-logo-placeholder">
+                            <i class="fas fa-building"></i>
+                        </div>
+                    <?php endif; ?>
+                </div>
+                <label for="logoInput" class="org-logo-upload" title="Upload/Change Logo">
+                    <i class="fas fa-camera"></i>
+                    <input type="file" id="logoInput" name="logo" accept="image/jpeg,image/png,image/gif,image/webp" onchange="previewLogo(this)">
+                </label>
+            </div>
+            <div class="org-info-header">
+                <h1><?php echo htmlspecialchars($organization['name']); ?></h1>
+                <p>Organization Details</p>
+            </div>
+        </div>
         <div class="form-section">
             <h2>Organization Information</h2>
             
@@ -377,8 +400,16 @@ include 'includes/header.php';
             
             <div class="form-group">
                 <label for="email">Email Address</label>
-                <input type="email" id="email" name="email" value="<?php echo htmlspecialchars($organization['email'] ?? ''); ?>">
-                <small>Optional</small>
+                <input type="email" id="email" name="email" 
+                       value="<?php echo htmlspecialchars($organization['email'] ?? ''); ?>" 
+                       <?php if ($email_exists): ?>readonly style="background: var(--border-color); cursor: not-allowed;"<?php endif; ?>>
+                <?php if ($email_exists): ?>
+                    <small style="color: var(--text-muted);">
+                        <i class="fas fa-lock" style="font-size: 10px;"></i> Email is set and cannot be changed
+                    </small>
+                <?php else: ?>
+                    <small>Optional</small>
+                <?php endif; ?>
             </div>
             
             <div class="form-group">
@@ -391,6 +422,16 @@ include 'includes/header.php';
                 <label for="address">Address</label>
                 <textarea id="address" name="address" placeholder="Organization address..."><?php echo htmlspecialchars($organization['address'] ?? ''); ?></textarea>
                 <small>Optional</small>
+            </div>
+            
+            <div class="form-group">
+                <label>Organization Logo</label>
+                <div style="display: flex; align-items: center; gap: 12px; padding: 12px; background: var(--page-bg); border-radius: 6px; border: 1px solid var(--border-color);">
+                    <i class="fas fa-info-circle" style="color: var(--text-muted);"></i>
+                    <small style="margin: 0; color: var(--text-secondary);">
+                        Click the <i class="fas fa-camera" style="margin: 0 4px;"></i> icon on the logo above to upload. Maximum file size: 200KB. Allowed formats: JPEG, PNG, GIF, WebP
+                    </small>
+                </div>
             </div>
         </div>
         
@@ -410,10 +451,42 @@ include 'includes/header.php';
 <script>
 function previewLogo(input) {
     if (input.files && input.files[0]) {
+        // Validate file size (200KB = 204800 bytes)
+        const maxSize = 204800;
+        if (input.files[0].size > maxSize) {
+            alert('File size exceeds 200KB limit. Your file is ' + Math.round(input.files[0].size / 1024) + 'KB.');
+            input.value = ''; // Clear the input
+            return;
+        }
+        
+        // Validate file type
+        const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+        if (!allowedTypes.includes(input.files[0].type)) {
+            alert('Invalid file type. Only JPEG, PNG, GIF, and WebP are allowed.');
+            input.value = ''; // Clear the input
+            return;
+        }
+        
         const reader = new FileReader();
         reader.onload = function(e) {
             const logo = document.getElementById('orgLogo');
-            logo.innerHTML = '<img src="' + e.target.result + '" alt="Organization Logo">';
+            // Preserve the structure but update the image
+            const existingImg = logo.querySelector('img');
+            if (existingImg) {
+                existingImg.src = e.target.result;
+                existingImg.style.display = 'block';
+                // Hide placeholder if exists
+                const placeholder = logo.querySelector('.org-logo-placeholder');
+                if (placeholder) placeholder.style.display = 'none';
+            } else {
+                // No existing image, create new structure
+                const placeholder = logo.querySelector('.org-logo-placeholder');
+                if (placeholder) {
+                    placeholder.style.display = 'none';
+                }
+                logo.innerHTML = '<img src="' + e.target.result + '" alt="Organization Logo" onerror="this.style.display=\'none\'; this.nextElementSibling.style.display=\'flex\';">' +
+                    '<div class="org-logo-placeholder" style="display: none;"><i class="fas fa-building"></i></div>';
+            }
         };
         reader.readAsDataURL(input.files[0]);
     }

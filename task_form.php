@@ -10,6 +10,10 @@ $error = '';
 $edit_task = null;
 $task_id = null;
 
+// Get organization-specific statuses
+$organization_id = isSuperAdmin() ? null : getOrganizationId();
+$statuses = getStatuses($organization_id);
+
 // Check if editing
 if (isset($_GET['edit'])) {
     $task_id = intval($_GET['edit']);
@@ -98,8 +102,13 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['create_task'])) {
             // Include project_id in task_id to ensure uniqueness: PROJ-PROJECTID-TASKNUM
             $task_id_str = $project_code . '-' . $project_id . '-' . $task_num;
             
-            $stmt = $conn->prepare("INSERT INTO tasks (task_id, project_id, title, description, type, priority, assignee_id, due_date, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
-            $stmt->bind_param("sissssssi", $task_id_str, $project_id, $title, $description, $type, $priority, $assignee_id, $due_date, $created_by);
+            // Get default status_id (first status from organization's statuses)
+            $default_status = !empty($statuses) ? $statuses[0] : null;
+            $status_id = $default_status ? $default_status['id'] : null;
+            $status_name = $default_status ? $default_status['name'] : 'To Do';
+            
+            $stmt = $conn->prepare("INSERT INTO tasks (task_id, project_id, title, description, type, priority, status_id, status, assignee_id, due_date, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            $stmt->bind_param("sissssissi", $task_id_str, $project_id, $title, $description, $type, $priority, $status_id, $status_name, $assignee_id, $due_date, $created_by);
             
             if ($stmt->execute()) {
                 $task_insert_id = $conn->insert_id;
@@ -126,24 +135,33 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_task'])) {
     $description = trim($_POST['description'] ?? '');
     $type = $_POST['type'];
     $priority = $_POST['priority'];
-    $status = $_POST['status'];
+    $status_id = intval($_POST['status_id']); // Now using status_id
     $assignee_id = !empty($_POST['assignee_id']) ? intval($_POST['assignee_id']) : null;
     $due_date = !empty($_POST['due_date']) ? $_POST['due_date'] : null;
+    
+    // Get status name for backward compatibility
+    $status_name_query = $conn->prepare("SELECT name FROM statuses WHERE id = ?");
+    $status_name_query->bind_param("i", $status_id);
+    $status_name_query->execute();
+    $status_name_result = $status_name_query->get_result();
+    $status_name = $status_name_result->fetch_assoc()['name'] ?? 'Unknown';
+    $status_name_query->close();
     
     // Get old values for logging
     $old_task = $conn->query("SELECT * FROM tasks WHERE id = $task_id")->fetch_assoc();
     
-    $stmt = $conn->prepare("UPDATE tasks SET title=?, description=?, type=?, priority=?, status=?, assignee_id=?, due_date=? WHERE id=?");
-    $stmt->bind_param("sssssssi", $title, $description, $type, $priority, $status, $assignee_id, $due_date, $task_id);
+    $stmt = $conn->prepare("UPDATE tasks SET title=?, description=?, type=?, priority=?, status_id=?, status=?, assignee_id=?, due_date=? WHERE id=?");
+    $stmt->bind_param("ssssissi", $title, $description, $type, $priority, $status_id, $status_name, $assignee_id, $due_date, $task_id);
     
     if ($stmt->execute()) {
         // Log changes
         $user_id = $_SESSION['user_id'];
         
-        if ($old_task['status'] != $status) {
+        if ($old_task['status_id'] != $status_id) {
+            $old_status_name = $old_task['status'] ?? 'Unknown';
             $action = "Status changed";
             $stmt2 = $conn->prepare("INSERT INTO activity_logs (task_id, user_id, action, old_value, new_value) VALUES (?, ?, ?, ?, ?)");
-            $stmt2->bind_param("iisss", $task_id, $user_id, $action, $old_task['status'], $status);
+            $stmt2->bind_param("iisss", $task_id, $user_id, $action, $old_status_name, $status_name);
             $stmt2->execute();
         }
         
@@ -445,10 +463,12 @@ include 'includes/header.php';
                     <label for="status">
                         Status <span class="required">*</span>
                     </label>
-                    <select id="status" name="status" required>
-                        <option value="To Do" <?php echo ($edit_task['status'] == 'To Do' || $edit_task['status'] == '') ? 'selected' : ''; ?>>To Do</option>
-                        <option value="In Progress" <?php echo $edit_task['status'] == 'In Progress' ? 'selected' : ''; ?>>In Progress</option>
-                        <option value="Closed" <?php echo ($edit_task['status'] == 'Closed' || $edit_task['status'] == 'Done') ? 'selected' : ''; ?>>Closed</option>
+                    <select id="status_id" name="status_id" required>
+                        <?php foreach ($statuses as $status_option): ?>
+                            <option value="<?php echo $status_option['id']; ?>" <?php echo (isset($edit_task['status_id']) && $edit_task['status_id'] == $status_option['id']) ? 'selected' : ''; ?>>
+                                <?php echo htmlspecialchars($status_option['name']); ?>
+                            </option>
+                        <?php endforeach; ?>
                     </select>
                 </div>
             <?php endif; ?>

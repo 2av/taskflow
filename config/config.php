@@ -91,19 +91,93 @@ function requireProjectManager() {
     }
 }
 
-// Helper function to normalize status for display (maps 'Done' to 'Closed' for backward compatibility)
+// Helper function to get statuses for an organization
+function getStatuses($organization_id = null) {
+    if ($organization_id === null) {
+        $organization_id = getOrganizationId();
+    }
+    
+    $conn = getDBConnection();
+    
+    // Get organization-specific statuses, or global defaults if none exist
+    $query = "SELECT * FROM statuses WHERE organization_id " . ($organization_id ? "= ?" : "IS NULL") . " ORDER BY display_order ASC, name ASC";
+    $stmt = $conn->prepare($query);
+    if ($organization_id) {
+        $stmt->bind_param("i", $organization_id);
+    }
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $statuses = $result->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+    
+    // If no organization-specific statuses, get global defaults
+    if (empty($statuses) && $organization_id) {
+        $query = "SELECT * FROM statuses WHERE organization_id IS NULL ORDER BY display_order ASC, name ASC";
+        $result = $conn->query($query);
+        $statuses = $result->fetch_all(MYSQLI_ASSOC);
+    }
+    
+    $conn->close();
+    return $statuses;
+}
+
+// Helper function to build status count SQL for queries
+function buildStatusCountSQL($statuses, $prefix = '') {
+    $cases = [];
+    foreach ($statuses as $status) {
+        $status_name = $status['name'];
+        $status_key = strtolower(str_replace(' ', '_', $status_name));
+        $escaped_name = addslashes($status_name);
+        $cases[] = "SUM(CASE WHEN {$prefix}status = '{$escaped_name}' THEN 1 ELSE 0 END) as {$status_key}_count";
+    }
+    return implode(",\n               ", $cases);
+}
+
+// Helper function to get status by name for an organization
+function getStatusByName($status_name, $organization_id = null) {
+    if ($organization_id === null) {
+        $organization_id = getOrganizationId();
+    }
+    
+    $conn = getDBConnection();
+    
+    // Try organization-specific first
+    if ($organization_id) {
+        $stmt = $conn->prepare("SELECT * FROM statuses WHERE organization_id = ? AND name = ?");
+        $stmt->bind_param("is", $organization_id, $status_name);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $status = $result->fetch_assoc();
+        $stmt->close();
+        
+        if ($status) {
+            $conn->close();
+            return $status;
+        }
+    }
+    
+    // Fallback to global defaults
+    $stmt = $conn->prepare("SELECT * FROM statuses WHERE organization_id IS NULL AND name = ?");
+    $stmt->bind_param("s", $status_name);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $status = $result->fetch_assoc();
+    $stmt->close();
+    $conn->close();
+    
+    return $status;
+}
+
+// Helper function to normalize status for display (backward compatibility)
 function normalizeStatusForDisplay($status) {
-    if ($status == 'Done') {
-        return 'Closed';
+    if ($status == 'Closed') {
+        return 'Done';
     }
     return $status;
 }
 
-// Helper function to normalize status for database (maps 'Closed' to 'Done' if database still uses 'Done')
+// Helper function to normalize status for database (backward compatibility)
 function normalizeStatusForDatabase($status) {
-    // For now, we'll use 'Closed' directly. If database ENUM still has 'Done', 
-    // uncomment the line below after running the migration script
-    // if ($status == 'Closed') return 'Done';
     return $status;
 }
 
@@ -205,8 +279,36 @@ function requireActiveSubscription() {
     }
 }
 
-// Load Cloudinary configuration if available
-if (file_exists(__DIR__ . '/cloudinary.php')) {
-    require_once __DIR__ . '/cloudinary.php';
+// Load upload system (local storage)
+if (file_exists(__DIR__ . '/upload.php')) {
+    require_once __DIR__ . '/upload.php';
+}
+
+/**
+ * Get image URL from filename (GUID) - Helper function available everywhere
+ * Uses local storage only
+ * 
+ * @param string $filename GUID filename from database
+ * @param string $type Type: 'profile' or 'organization'
+ * @return string|null Full image URL or null if empty
+ */
+function getImageUrl($filename, $type = 'profile') {
+    if (empty($filename)) {
+        return null;
+    }
+    
+    // If it's already a full URL, return as is (backward compatibility)
+    if (filter_var($filename, FILTER_VALIDATE_URL)) {
+        return $filename;
+    }
+    
+    // Use local storage helper
+    if (function_exists('getImageUrlLocal')) {
+        return getImageUrlLocal($filename, $type);
+    }
+    
+    // Fallback to local path
+    $local_folder = $type === 'organization' ? 'uploads/organizations' : 'uploads/profiles';
+    return $local_folder . '/' . $filename;
 }
 ?>

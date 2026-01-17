@@ -7,6 +7,11 @@ $conn = getDBConnection();
 $message = '';
 $error = '';
 
+// Get organization-specific statuses
+$organization_id = isSuperAdmin() ? null : getOrganizationId();
+$statuses = getStatuses($organization_id);
+$status_names = array_column($statuses, 'name');
+
 // Handle task creation
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['create_task'])) {
     $project_id = intval($_POST['project_id']);
@@ -44,9 +49,14 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['create_task'])) {
         // Include project_id in task_id to ensure uniqueness: PROJ-PROJECTID-TASKNUM
         $task_id = $project_code . '-' . $project_id . '-' . $task_num;
         
-        $status = 'To Do'; // Default status - will be saved as 'To Do', 'In Progress', or 'Closed'
-        $stmt = $conn->prepare("INSERT INTO tasks (task_id, project_id, title, description, type, priority, status, assignee_id, due_date, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-        $stmt->bind_param("sisssssssi", $task_id, $project_id, $title, $description, $type, $priority, $status, $assignee_id, $due_date, $created_by);
+        // Get default status_id (first status from organization's statuses)
+        $org_statuses = getStatuses($organization_id ?? null);
+        $default_status = !empty($org_statuses) ? $org_statuses[0] : null;
+        $status_id = $default_status ? $default_status['id'] : null;
+        $status_name = $default_status ? $default_status['name'] : 'To Do';
+        
+        $stmt = $conn->prepare("INSERT INTO tasks (task_id, project_id, title, description, type, priority, status_id, status, assignee_id, due_date, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        $stmt->bind_param("sissssissi", $task_id, $project_id, $title, $description, $type, $priority, $status_id, $status_name, $assignee_id, $due_date, $created_by);
         
         if ($stmt->execute()) {
             $task_insert_id = $conn->insert_id;
@@ -68,32 +78,59 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['create_task'])) {
 // Handle quick status update
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_status_quick'])) {
     $task_id = intval($_POST['task_id']);
-    $new_status = $_POST['status'];
+    $new_status_id = intval($_POST['status_id']); // Now using status_id
     $user_id = $_SESSION['user_id'];
     
-    // Get old status
-    $old_task = $conn->query("SELECT status FROM tasks WHERE id = $task_id")->fetch_assoc();
-    if ($old_task) {
-        $old_status = $old_task['status'];
+    // Validate status_id exists and belongs to this organization
+    $org_statuses = getStatuses($organization_id);
+    $valid_status_ids = array_column($org_statuses, 'id');
+    
+    if (!in_array($new_status_id, $valid_status_ids)) {
+        $error = 'Invalid status ID: ' . htmlspecialchars($new_status_id);
+    } else {
+        // Get old status info
+        $old_task = $conn->prepare("SELECT t.status_id, s.name as status_name FROM tasks t LEFT JOIN statuses s ON t.status_id = s.id WHERE t.id = ?");
+        $old_task->bind_param("i", $task_id);
+        $old_task->execute();
+        $old_result = $old_task->get_result();
+        $old_task_data = $old_result->fetch_assoc();
+        $old_task->close();
         
-        // Update status
-        $stmt = $conn->prepare("UPDATE tasks SET status = ? WHERE id = ?");
-        $stmt->bind_param("si", $new_status, $task_id);
-        
-        if ($stmt->execute()) {
-            // Log activity
-            if ($old_status != $new_status) {
-                $action = "Status changed";
-                $stmt2 = $conn->prepare("INSERT INTO activity_logs (task_id, user_id, action, old_value, new_value) VALUES (?, ?, ?, ?, ?)");
-                $stmt2->bind_param("iisss", $task_id, $user_id, $action, $old_status, $new_status);
-                $stmt2->execute();
-                $stmt2->close();
+        if ($old_task_data) {
+            $old_status_id = $old_task_data['status_id'];
+            $old_status_name = $old_task_data['status_name'] ?? 'Unknown';
+            
+            // Get new status name for logging
+            $new_status_query = $conn->prepare("SELECT name FROM statuses WHERE id = ?");
+            $new_status_query->bind_param("i", $new_status_id);
+            $new_status_query->execute();
+            $new_status_result = $new_status_query->get_result();
+            $new_status_data = $new_status_result->fetch_assoc();
+            $new_status_name = $new_status_data['name'] ?? 'Unknown';
+            $new_status_query->close();
+            
+            // Update status_id (and status name for backward compatibility)
+            $stmt = $conn->prepare("UPDATE tasks SET status_id = ?, status = ? WHERE id = ?");
+            $stmt->bind_param("isi", $new_status_id, $new_status_name, $task_id);
+            
+            if ($stmt->execute()) {
+                // Log activity
+                if ($old_status_id != $new_status_id) {
+                    $action = "Status changed";
+                    $stmt2 = $conn->prepare("INSERT INTO activity_logs (task_id, user_id, action, old_value, new_value) VALUES (?, ?, ?, ?, ?)");
+                    $stmt2->bind_param("iisss", $task_id, $user_id, $action, $old_status_name, $new_status_name);
+                    $stmt2->execute();
+                    $stmt2->close();
+                }
+                $message = 'Status updated successfully';
+            } else {
+                $error = 'Error updating status: ' . $conn->error;
+                error_log("Status update SQL error: " . $conn->error);
             }
-            $message = 'Status updated successfully';
+            $stmt->close();
         } else {
-            $error = 'Error updating status';
+            $error = 'Task not found';
         }
-        $stmt->close();
     }
 }
 
@@ -104,27 +141,33 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_task'])) {
     $description = trim($_POST['description']);
     $type = $_POST['type'];
     $priority = $_POST['priority'];
-    $status = $_POST['status'];
-    // Map 'Closed' to 'Done' if database ENUM still uses 'Done' (temporary until migration)
-    // After running migration script, remove this mapping
-    // if ($status == 'Closed') $status = 'Done';
+    $status_id = intval($_POST['status_id']); // Now using status_id
     $assignee_id = !empty($_POST['assignee_id']) ? intval($_POST['assignee_id']) : null;
     $due_date = !empty($_POST['due_date']) ? $_POST['due_date'] : null;
+    
+    // Get status name for backward compatibility
+    $status_name_query = $conn->prepare("SELECT name FROM statuses WHERE id = ?");
+    $status_name_query->bind_param("i", $status_id);
+    $status_name_query->execute();
+    $status_name_result = $status_name_query->get_result();
+    $status_name = $status_name_result->fetch_assoc()['name'] ?? 'Unknown';
+    $status_name_query->close();
     
     // Get old values for logging
     $old_task = $conn->query("SELECT * FROM tasks WHERE id = $task_id")->fetch_assoc();
     
-    $stmt = $conn->prepare("UPDATE tasks SET title=?, description=?, type=?, priority=?, status=?, assignee_id=?, due_date=? WHERE id=?");
-    $stmt->bind_param("sssssssi", $title, $description, $type, $priority, $status, $assignee_id, $due_date, $task_id);
+    $stmt = $conn->prepare("UPDATE tasks SET title=?, description=?, type=?, priority=?, status_id=?, status=?, assignee_id=?, due_date=? WHERE id=?");
+    $stmt->bind_param("ssssissi", $title, $description, $type, $priority, $status_id, $status_name, $assignee_id, $due_date, $task_id);
     
     if ($stmt->execute()) {
         // Log changes
         $user_id = $_SESSION['user_id'];
         
-        if ($old_task['status'] != $status) {
+        if ($old_task['status_id'] != $status_id) {
+            $old_status_name = $old_task['status'] ?? 'Unknown';
             $action = "Status changed";
             $stmt2 = $conn->prepare("INSERT INTO activity_logs (task_id, user_id, action, old_value, new_value) VALUES (?, ?, ?, ?, ?)");
-            $stmt2->bind_param("iisss", $task_id, $user_id, $action, $old_task['status'], $status);
+            $stmt2->bind_param("iisss", $task_id, $user_id, $action, $old_status_name, $status_name);
             $stmt2->execute();
         }
         
@@ -248,21 +291,20 @@ if (!empty($filter_project)) {
 }
 
 if (!empty($filter_status)) {
-    // Map 'Closed' filter to include both 'Closed' and 'Done' for backward compatibility
-    $mapped_status = [];
-    foreach ($filter_status as $status) {
-        if ($status == 'Closed') {
-            $mapped_status[] = 'Closed';
-            $mapped_status[] = 'Done'; // Include old 'Done' status
-        } else {
-            $mapped_status[] = $status;
+    // Filter by status_id - convert status names to IDs
+    $status_ids = [];
+    foreach ($filter_status as $status_name) {
+        $status_info = getStatusByName($status_name, $organization_id);
+        if ($status_info) {
+            $status_ids[] = $status_info['id'];
         }
     }
-    $mapped_status = array_unique($mapped_status);
-    $placeholders = implode(',', array_fill(0, count($mapped_status), '?'));
-    $where_conditions[] = "t.status IN ($placeholders)";
-    $query_params = array_merge($query_params, $mapped_status);
-    $query_types .= str_repeat('s', count($mapped_status));
+    if (!empty($status_ids)) {
+        $placeholders = implode(',', array_fill(0, count($status_ids), '?'));
+        $where_conditions[] = "t.status_id IN ($placeholders)";
+        $query_params = array_merge($query_params, $status_ids);
+        $query_types .= str_repeat('i', count($status_ids));
+    }
 }
 
 if (!empty($filter_priority)) {
@@ -365,9 +407,11 @@ $total_pages = ceil($total_items / $items_per_page);
 // Get tasks with pagination
 $query = "
     SELECT t.*, p.name as project_name, u.full_name as assignee_name, u2.full_name as creator_name,
-           COALESCE(t.status, 'To Do') as status
+           COALESCE(s.name, t.status, 'To Do') as status,
+           t.status_id
     FROM tasks t
     LEFT JOIN projects p ON t.project_id = p.id
+    LEFT JOIN statuses s ON t.status_id = s.id
     LEFT JOIN users u ON t.assignee_id = u.id
     LEFT JOIN users u2 ON t.created_by = u2.id
     $where_clause
@@ -449,12 +493,18 @@ if (isSuperAdmin()) {
 
 $stats_where_clause = !empty($stats_where_conditions) ? "WHERE " . implode(" AND ", $stats_where_conditions) : "";
 
+// Build dynamic status counts based on organization's statuses (using status_id)
+$status_count_cases = [];
+foreach ($statuses as $status) {
+    $status_id = $status['id'];
+    $status_key = strtolower(str_replace(' ', '_', $status['name']));
+    $status_count_cases[] = "SUM(CASE WHEN t.status_id = $status_id THEN 1 ELSE 0 END) as {$status_key}_count";
+}
+
 $stats_query = "
     SELECT 
         COUNT(*) as total_tasks,
-        SUM(CASE WHEN t.status = 'To Do' THEN 1 ELSE 0 END) as todo_count,
-        SUM(CASE WHEN t.status = 'In Progress' THEN 1 ELSE 0 END) as inprogress_count,
-        SUM(CASE WHEN t.status = 'Closed' OR t.status = 'Done' THEN 1 ELSE 0 END) as closed_count
+        " . implode(",\n        ", $status_count_cases) . "
     FROM tasks t
     LEFT JOIN projects p ON t.project_id = p.id
     LEFT JOIN users u ON t.assignee_id = u.id
@@ -1080,7 +1130,7 @@ if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQ
         'All' => intval($task_stats['total_tasks']),
         'To Do' => intval($task_stats['todo_count']),
         'In Progress' => intval($task_stats['inprogress_count']),
-        'Closed' => intval($task_stats['closed_count'])
+        'Done' => intval($task_stats['done_count'])
     ];
     
     $status_colors = [
@@ -1094,7 +1144,7 @@ if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQ
         'All' => 'fa-tasks',
         'To Do' => 'fa-clock',
         'In Progress' => 'fa-spinner',
-        'Closed' => 'fa-check-circle'
+        'Done' => 'fa-check-circle'
     ];
     
     $current_filter_status = isset($_GET['status']) ? (is_array($_GET['status']) ? $_GET['status'] : [$_GET['status']]) : [];
@@ -1405,11 +1455,14 @@ include 'includes/header.php';
     border: 1px solid var(--border-color);
     box-shadow: 0 1px 3px var(--shadow);
     overflow: hidden;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
 }
 
 .tasks-table {
     width: 100%;
     border-collapse: collapse;
+    min-width: 800px;
 }
 
 .tasks-table thead {
@@ -1427,10 +1480,6 @@ include 'includes/header.php';
     border-bottom: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-.tasks-table th:first-child {
-    width: 40px;
-    text-align: center;
-}
 
 .tasks-table tbody tr {
     border-bottom: 1px solid var(--border-color);
@@ -1620,6 +1669,54 @@ include 'includes/header.php';
     opacity: 0.5;
     cursor: not-allowed;
 }
+
+/* Mobile Responsive Styles */
+@media (max-width: 768px) {
+    .tasks-page-container {
+        padding: 16px;
+    }
+    
+    .tasks-table-container {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        width: 100%;
+    }
+    
+    .tasks-table {
+        min-width: 700px;
+    }
+    
+    .tasks-table th,
+    .tasks-table td {
+        padding: 12px 8px;
+        font-size: 13px;
+    }
+    
+    .tasks-filters-bar {
+        flex-direction: column;
+        gap: 8px;
+    }
+    
+    .search-input-wrapper {
+        min-width: 100%;
+    }
+    
+    .tasks-overview-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 12px;
+    }
+    
+    .tasks-summary-stats {
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+    
+    .stat-badge {
+        font-size: 12px;
+        padding: 6px 12px;
+    }
+}
 </style>
 
 <div class="tasks-page-container">
@@ -1651,11 +1748,6 @@ include 'includes/header.php';
     <!-- Task Summary Statistics -->
     <div class="tasks-summary-stats">
         <?php 
-        // Calculate status counts - To Do, In Progress, Closed
-        $todo_count = intval($task_stats['todo_count'] ?? 0);
-        $inprogress_count = intval($task_stats['inprogress_count'] ?? 0);
-        $closed_count = intval($task_stats['closed_count'] ?? 0);
-        
         // Build filter URLs
         function buildFilterUrl($params) {
             $url_params = [];
@@ -1680,31 +1772,29 @@ include 'includes/header.php';
             'search' => $search
         ];
         
-        $is_todo_active = !empty($filter_status) && in_array('To Do', $filter_status);
-        $is_inprogress_active = !empty($filter_status) && in_array('In Progress', $filter_status);
-        $is_closed_active = !empty($filter_status) && in_array('Closed', $filter_status);
+        // Display status badges dynamically
+        foreach ($statuses as $status):
+            $status_name = $status['name'];
+            $status_key = strtolower(str_replace(' ', '_', $status_name));
+            $status_count = intval($task_stats[$status_key . '_count'] ?? 0);
+            $is_active = !empty($filter_status) && in_array($status_name, $filter_status);
+            
+            // Determine dot class based on status name
+            $dot_class = 'pending';
+            if (stripos($status_name, 'progress') !== false || stripos($status_name, 'active') !== false) {
+                $dot_class = 'active';
+            } elseif (stripos($status_name, 'done') !== false || stripos($status_name, 'closed') !== false || stripos($status_name, 'complete') !== false) {
+                $dot_class = 'closed';
+            }
         ?>
-        
-        <a href="<?php echo htmlspecialchars(buildFilterUrl(array_merge($base_params, ['status' => 'To Do']))); ?>" 
-           class="stat-badge <?php echo $is_todo_active ? 'active' : ''; ?>">
-            <span class="stat-dot pending"></span>
-            <span>To Do</span>
-            <span><?php echo $todo_count; ?></span>
+        <a href="<?php echo htmlspecialchars(buildFilterUrl(array_merge($base_params, ['status' => $status_name]))); ?>" 
+           class="stat-badge <?php echo $is_active ? 'active' : ''; ?>"
+           style="<?php echo $is_active ? 'background: ' . htmlspecialchars($status['color']) . '; color: white; border-color: ' . htmlspecialchars($status['color']) . ';' : ''; ?>">
+            <span class="stat-dot <?php echo $dot_class; ?>" style="background: <?php echo htmlspecialchars($status['color']); ?>;"></span>
+            <span><?php echo htmlspecialchars($status_name); ?></span>
+            <span><?php echo $status_count; ?></span>
         </a>
-        
-        <a href="<?php echo htmlspecialchars(buildFilterUrl(array_merge($base_params, ['status' => 'In Progress']))); ?>" 
-           class="stat-badge <?php echo $is_inprogress_active ? 'active' : ''; ?>">
-            <span class="stat-dot active"></span>
-            <span>In Progress</span>
-            <span><?php echo $inprogress_count; ?></span>
-        </a>
-        
-        <a href="<?php echo htmlspecialchars(buildFilterUrl(array_merge($base_params, ['status' => 'Closed']))); ?>" 
-           class="stat-badge <?php echo $is_closed_active ? 'active' : ''; ?>">
-            <span class="stat-dot closed"></span>
-            <span>Closed</span>
-            <span><?php echo $closed_count; ?></span>
-        </a>
+        <?php endforeach; ?>
     </div>
 
     <!-- Search and Filter Bar -->
@@ -1736,11 +1826,11 @@ include 'includes/header.php';
             $project_options[$proj['id']] = $proj['name'];
         }
         
-        $status_options = [
-            'To Do' => 'To Do',
-            'In Progress' => 'In Progress',
-            'Done' => 'Done'
-        ];
+        // Build status options from database
+        $status_options = [];
+        foreach ($statuses as $status) {
+            $status_options[$status['name']] = $status['name'];
+        }
         
         $priority_options = [
             'High' => 'High',
@@ -1773,9 +1863,6 @@ include 'includes/header.php';
         <table class="tasks-table">
             <thead>
                 <tr>
-                    <th style="text-align: center; width: 40px;">
-                        <input type="checkbox" class="task-checkbox" id="selectAllTasks" title="Select All">
-                    </th>
                     <th>Task</th>
                     <th>Project</th>
                     <th style="text-align: center;">Status</th>
@@ -1790,7 +1877,7 @@ include 'includes/header.php';
                 if (!isset($tasks) || empty($tasks)): 
                 ?>
                     <tr>
-                        <td colspan="7" style="text-align: center; padding: 48px 16px; color: var(--text-muted);">
+                        <td colspan="6" style="text-align: center; padding: 48px 16px; color: var(--text-muted);">
                             <i class="fas fa-tasks" style="font-size: 48px; opacity: 0.3; margin-bottom: 12px; display: block;"></i>
                             <p style="margin: 0; font-size: 14px;">No tasks found</p>
                             <?php if (!empty($filter_project)): ?>
@@ -1803,15 +1890,29 @@ include 'includes/header.php';
                 <?php else: ?>
                     <?php foreach ($tasks as $task): ?>
                         <?php 
-                        // Status badge class
-                        $task_status = normalizeStatusForDisplay($task['status'] ?? 'To Do');
+                        // Get status info from database using status_id
+                        $task_status_id = $task['status_id'] ?? null;
+                        $task_status = $task['status'] ?? 'To Do';
+                        
+                        // Get status info by ID if available, otherwise by name
+                        if ($task_status_id) {
+                            $status_info = null;
+                            foreach ($statuses as $s) {
+                                if ($s['id'] == $task_status_id) {
+                                    $status_info = $s;
+                                    break;
+                                }
+                            }
+                        } else {
+                            $status_info = getStatusByName($task_status, $organization_id);
+                        }
+                        
+                        $status_color = $status_info['color'] ?? '#6c757d';
                         $status_lower = strtolower(str_replace(' ', '-', $task_status));
                         $status_class = 'table-status-pending';
-                        if (strpos($status_lower, 'to-do') !== false || strpos($status_lower, 'todo') !== false) {
-                            $status_class = 'table-status-pending';
-                        } elseif (strpos($status_lower, 'in-progress') !== false || strpos($status_lower, 'inprogress') !== false) {
+                        if (stripos($task_status, 'progress') !== false || stripos($task_status, 'active') !== false) {
                             $status_class = 'table-status-active';
-                        } elseif (strpos($status_lower, 'closed') !== false) {
+                        } elseif (stripos($task_status, 'done') !== false || stripos($task_status, 'closed') !== false || stripos($task_status, 'complete') !== false) {
                             $status_class = 'table-status-closed';
                         }
                         
@@ -1837,9 +1938,6 @@ include 'includes/header.php';
                         }
                         ?>
                         <tr data-task-id="<?php echo $task['id']; ?>" style="cursor: pointer; transition: background-color 0.2s;" class="task-row">
-                            <td style="text-align: center;" onclick="event.stopPropagation();">
-                                <input type="checkbox" class="task-checkbox" onclick="event.stopPropagation();">
-                            </td>
                             <td>
                                 <div class="task-name-cell">
                                     <span class="task-name-text"><?php echo htmlspecialchars($task['title']); ?></span>
@@ -1848,27 +1946,19 @@ include 'includes/header.php';
                             <td>
                                 <span class="task-project"><?php echo htmlspecialchars($task['project_name'] ?? '—'); ?></span>
                             </td>
-                            <td style="text-align: center;" onclick="event.stopPropagation(); event.preventDefault();">
-                                <form method="POST" action="" style="display: inline-block; margin: 0;" id="statusForm_<?php echo $task['id']; ?>" onclick="event.stopPropagation();">
+                            <td style="text-align: center;" onclick="event.stopPropagation();">
+                                <form method="POST" action="" style="display: inline-block; margin: 0;" id="statusForm_<?php echo $task['id']; ?>" onsubmit="return updateTaskStatusQuick(<?php echo $task['id']; ?>, this);">
                                     <input type="hidden" name="task_id" value="<?php echo $task['id']; ?>">
                                     <input type="hidden" name="update_status_quick" value="1">
-                                    <select name="status" 
-                                            onchange="updateTaskStatusQuick(<?php echo $task['id']; ?>, this.value); event.stopPropagation();" 
+                                    <select name="status_id" 
+                                            onchange="this.form.submit();" 
                                             onclick="event.stopPropagation();"
-                                            style="padding: 4px 24px 4px 8px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 12px; font-weight: 500; cursor: pointer; background: <?php 
-                                                if ($status_class == 'table-status-pending') echo 'var(--chart-yellow)';
-                                                elseif ($status_class == 'table-status-active') echo 'var(--chart-green)';
-                                                elseif ($status_class == 'table-status-closed') echo 'var(--closed-bg)';
-                                                else echo 'var(--card-bg)';
-                                            ?>; color: <?php 
-                                                if ($status_class == 'table-status-pending') echo 'var(--text-primary)';
-                                                elseif ($status_class == 'table-status-active') echo 'white';
-                                                elseif ($status_class == 'table-status-closed') echo 'var(--closed-text)';
-                                                else echo 'var(--text-primary)';
-                                            ?>; appearance: none; background-image: url('data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 12 12\'%3E%3Cpath fill=\'%236B7280\' d=\'M6 9L1 4h10z\'/%3E%3C/svg%3E'); background-repeat: no-repeat; background-position: right 8px center; min-width: 110px;">
-                                        <option value="To Do" <?php echo ($task_status == 'To Do') ? 'selected' : ''; ?>>To Do</option>
-                                        <option value="In Progress" <?php echo ($task_status == 'In Progress') ? 'selected' : ''; ?>>In Progress</option>
-                                        <option value="Closed" <?php echo ($task_status == 'Closed' || normalizeStatusForDisplay($task['status']) == 'Closed') ? 'selected' : ''; ?>>Closed</option>
+                                            style="padding: 4px 24px 4px 8px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 12px; font-weight: 500; cursor: pointer; background: <?php echo htmlspecialchars($status_color); ?>; color: white; appearance: none; background-image: url('data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 12 12\'%3E%3Cpath fill=\'%23ffffff\' d=\'M6 9L1 4h10z\'/%3E%3C/svg%3E'); background-repeat: no-repeat; background-position: right 8px center; min-width: 110px;">
+                                        <?php foreach ($statuses as $status_option): ?>
+                                            <option value="<?php echo $status_option['id']; ?>" <?php echo ($task_status_id == $status_option['id']) ? 'selected' : ''; ?>>
+                                                <?php echo htmlspecialchars($status_option['name']); ?>
+                                            </option>
+                                        <?php endforeach; ?>
                                     </select>
                                 </form>
                             </td>
@@ -1959,7 +2049,7 @@ include 'includes/header.php';
                     </select>
                 </div>
                 
-                <input type="hidden" name="status" value="To Do">
+                <input type="hidden" name="status_id" value="<?php echo !empty($statuses) ? $statuses[0]['id'] : ''; ?>">
                 <input type="hidden" name="priority" value="Low">
             </div>
             <div class="modal-footer" style="padding: 16px 24px; border-top: 1px solid var(--border-color); display: flex; justify-content: flex-end; gap: 12px;">
@@ -2273,13 +2363,12 @@ document.addEventListener('DOMContentLoaded', function() {
                 return false;
             }
             
-            // Check if clicking inside a form, select, or checkbox
+            // Check if clicking inside a form, select, or button
             const form = target.closest('form');
             const select = target.closest('select');
-            const checkbox = target.closest('input[type="checkbox"]');
             const button = target.closest('button');
             
-            if (form || select || checkbox || button) {
+            if (form || select || button) {
                 event.stopPropagation();
                 return false;
             }
@@ -2295,16 +2384,22 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 // Quick status update function
-function updateTaskStatusQuick(taskId, newStatus) {
-    const form = document.getElementById('statusForm_' + taskId);
+function updateTaskStatusQuick(taskId, form) {
+    if (!form) {
+        form = document.getElementById('statusForm_' + taskId);
+    }
+    
     if (form) {
         // Create a FormData object
         const formData = new FormData(form);
         
         // Submit via fetch to avoid page reload
-        fetch('', {
+        fetch('tasks', {
             method: 'POST',
-            body: formData
+            body: formData,
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest'
+            }
         })
         .then(response => {
             if (response.ok) {

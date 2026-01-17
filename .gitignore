@@ -1,0 +1,39 @@
+# Uploads directory (local files)
+uploads/*
+!uploads/.gitkeep
+
+# Vendor directory
+vendor/
+
+# Environment files
+.env
+.env.local
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+
+# Composer
+composer.lock
+
+# Node modules (if any)
+node_modules/
+
+# Cache
+cache/
+*.cache

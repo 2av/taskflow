@@ -9,6 +9,10 @@ $conn = getDBConnection();
 $message = '';
 $error = '';
 
+// Get organization-specific statuses
+$organization_id = isSuperAdmin() ? null : getOrganizationId();
+$statuses = getStatuses($organization_id);
+
 // Handle project creation from dashboard
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['create_project'])) {
     $name = trim($_POST['name']);
@@ -100,15 +104,22 @@ function timeAgo($datetime) {
     }
 }
 
+// Build dynamic status count SQL using status_id
+$status_count_cases = [];
+foreach ($statuses as $status) {
+    $status_id = $status['id'];
+    $status_key = strtolower(str_replace(' ', '_', $status['name']));
+    $status_count_cases[] = "SUM(CASE WHEN t.status_id = $status_id THEN 1 ELSE 0 END) as {$status_key}_count";
+}
+$status_count_sql = implode(",\n               ", $status_count_cases);
+
 // Get projects with task statistics and last activity
 if (isSuperAdmin()) {
     // Super Admin sees all projects
     $projects_query = "
         SELECT p.*, 
                COUNT(t.id) as total_tasks,
-               SUM(CASE WHEN t.status = 'To Do' THEN 1 ELSE 0 END) as todo_count,
-               SUM(CASE WHEN t.status = 'In Progress' THEN 1 ELSE 0 END) as inprogress_count,
-               SUM(CASE WHEN t.status = 'Closed' OR t.status = 'Done' THEN 1 ELSE 0 END) as closed_count,
+               {$status_count_sql},
                (SELECT MAX(al.created_at) 
                 FROM activity_logs al 
                 JOIN tasks t2 ON al.task_id = t2.id 
@@ -125,9 +136,7 @@ if (isSuperAdmin()) {
     $projects_query = "
         SELECT p.*, 
                COUNT(t.id) as total_tasks,
-               SUM(CASE WHEN t.status = 'To Do' THEN 1 ELSE 0 END) as todo_count,
-               SUM(CASE WHEN t.status = 'In Progress' THEN 1 ELSE 0 END) as inprogress_count,
-               SUM(CASE WHEN t.status = 'Closed' OR t.status = 'Done' THEN 1 ELSE 0 END) as closed_count,
+               {$status_count_sql},
                (SELECT MAX(al.created_at) 
                 FROM activity_logs al 
                 JOIN tasks t2 ON al.task_id = t2.id 
@@ -150,9 +159,7 @@ if (isSuperAdmin()) {
     $projects_query = "
         SELECT DISTINCT p.*, 
                COUNT(t.id) as total_tasks,
-               SUM(CASE WHEN t.status = 'To Do' THEN 1 ELSE 0 END) as todo_count,
-               SUM(CASE WHEN t.status = 'In Progress' THEN 1 ELSE 0 END) as inprogress_count,
-               SUM(CASE WHEN t.status = 'Closed' OR t.status = 'Done' THEN 1 ELSE 0 END) as closed_count,
+               {$status_count_sql},
                (SELECT MAX(al.created_at) 
                 FROM activity_logs al 
                 JOIN tasks t2 ON al.task_id = t2.id 
@@ -171,9 +178,7 @@ if (isSuperAdmin()) {
     $projects_query = "
         SELECT DISTINCT p.*, 
                COUNT(t.id) as total_tasks,
-               SUM(CASE WHEN t.status = 'To Do' THEN 1 ELSE 0 END) as todo_count,
-               SUM(CASE WHEN t.status = 'In Progress' THEN 1 ELSE 0 END) as inprogress_count,
-               SUM(CASE WHEN t.status = 'Closed' OR t.status = 'Done' THEN 1 ELSE 0 END) as closed_count,
+               {$status_count_sql},
                (SELECT MAX(al.created_at) 
                 FROM activity_logs al 
                 JOIN tasks t2 ON al.task_id = t2.id 
@@ -1208,23 +1213,25 @@ include 'includes/header.php';
             </div>
         <?php else: ?>
         <?php 
-        // Calculate statistics for selected project only
+        // Calculate statistics for selected project only - use dynamic statuses
+        $project_status_counts = [];
         if ($selected_project) {
-            $overall_active = intval($selected_project['inprogress_count'] ?? 0);
-            $overall_pending = intval($selected_project['todo_count'] ?? 0);
-            $overall_closed = intval($selected_project['closed_count'] ?? 0);
+            foreach ($statuses as $status) {
+                $status_key = strtolower(str_replace(' ', '_', $status['name']));
+                $project_status_counts[$status['name']] = intval($selected_project[$status_key . '_count'] ?? 0);
+            }
             $overall_total = intval($selected_project['total_tasks'] ?? 0);
         } else {
             // If no project selected, show overall stats
-            $overall_active = 0;
-            $overall_pending = 0;
-            $overall_closed = 0;
-            foreach ($projects as $proj) {
-                $overall_active += intval($proj['inprogress_count'] ?? 0);
-                $overall_pending += intval($proj['todo_count'] ?? 0);
-                $overall_closed += intval($proj['closed_count'] ?? 0);
+            foreach ($statuses as $status) {
+                $status_key = strtolower(str_replace(' ', '_', $status['name']));
+                $count = 0;
+                foreach ($projects as $proj) {
+                    $count += intval($proj[$status_key . '_count'] ?? 0);
+                }
+                $project_status_counts[$status['name']] = $count;
             }
-            $overall_total = $overall_active + $overall_pending + $overall_closed;
+            $overall_total = array_sum($project_status_counts);
         }
         ?>
         
@@ -1257,28 +1264,41 @@ include 'includes/header.php';
             
             <!-- Status Badges -->
             <div class="status-badges-container" style="display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap;">
-                <div class="status-badge status-badge-todo" style="display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 12px 16px; background: var(--chart-yellow); color: white; border-radius: 6px; font-size: 14px; font-weight: 500;">
+                <?php foreach ($statuses as $status): 
+                    $status_name = $status['name'];
+                    $status_count = $project_status_counts[$status_name] ?? 0;
+                    $status_color = $status['color'];
+                    
+                    // Determine icon based on status name
+                    $status_icon = 'fa-circle';
+                    if (stripos($status_name, 'todo') !== false || stripos($status_name, 'to do') !== false) {
+                        $status_icon = 'fa-circle';
+                    } elseif (stripos($status_name, 'progress') !== false || stripos($status_name, 'active') !== false) {
+                        $status_icon = 'fa-spinner';
+                    } elseif (stripos($status_name, 'done') !== false || stripos($status_name, 'closed') !== false || stripos($status_name, 'complete') !== false) {
+                        $status_icon = 'fa-check-circle';
+                    }
+                ?>
+                <div class="status-badge" style="display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 12px 16px; background: <?php echo htmlspecialchars($status_color); ?>; color: white; border-radius: 6px; font-size: 14px; font-weight: 500;">
                     <div style="display: flex; align-items: center; gap: 6px;">
-                        <i class="fas fa-circle" style="font-size: 8px;"></i>
-                        <span>To Do</span>
+                        <i class="fas <?php echo $status_icon; ?>" style="font-size: <?php echo ($status_icon == 'fa-circle') ? '8px' : '12px'; ?>;"></i>
+                        <span><?php echo htmlspecialchars($status_name); ?></span>
                     </div>
-                    <span class="status-count" style="font-size: 18px; font-weight: 700; margin-top: 2px;"><?php echo $overall_pending; ?></span>
+                    <span class="status-count" style="font-size: 18px; font-weight: 700; margin-top: 2px;"><?php echo $status_count; ?></span>
                 </div>
-                <div class="status-badge status-badge-progress" style="display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 12px 16px; background: var(--chart-green); color: white; border-radius: 6px; font-size: 14px; font-weight: 500;">
-                    <div style="display: flex; align-items: center; gap: 6px;">
-                        <i class="fas fa-spinner" style="font-size: 12px;"></i>
-                        <span>In Progress</span>
+                <?php endforeach; ?>
+                <?php if (empty($statuses)): ?>
+                    <!-- Fallback if no statuses found -->
+                    <div class="status-badge" style="display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 12px 16px; background: var(--chart-yellow); color: white; border-radius: 6px; font-size: 14px; font-weight: 500;">
+                        <div style="display: flex; align-items: center; gap: 6px;">
+                            <i class="fas fa-circle" style="font-size: 8px;"></i>
+                            <span>To Do</span>
+                        </div>
+                        <span class="status-count" style="font-size: 18px; font-weight: 700; margin-top: 2px;">0</span>
                     </div>
-                    <span class="status-count" style="font-size: 18px; font-weight: 700; margin-top: 2px;"><?php echo $overall_active; ?></span>
-                </div>
-                <div class="status-badge status-badge-closed" style="display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 12px 16px; background: var(--chart-gray); color: white; border-radius: 6px; font-size: 14px; font-weight: 500;">
-                    <div style="display: flex; align-items: center; gap: 6px;">
-                        <i class="fas fa-check-circle" style="font-size: 12px;"></i>
-                        <span>Closed</span>
-                    </div>
-                    <span class="status-count" style="font-size: 18px; font-weight: 700; margin-top: 2px;"><?php echo $overall_closed; ?></span>
-                </div>
+                <?php endif; ?>
             </div>
+            
             
             <!-- Unified Charts Layout -->
             <div class="charts-grid-layout" style="display: grid; grid-template-columns: 1.2fr 1fr 1.5fr; gap: 24px; margin-top: 24px; align-items: start;">
@@ -1287,27 +1307,20 @@ include 'includes/header.php';
                     <h3 style="font-size: 13px; font-weight: 600; color: var(--text-secondary); margin: 0 0 16px 0; text-transform: uppercase; letter-spacing: 0.5px;">Task Distribution</h3>
                     <!-- Progress Bars -->
                     <div style="margin-bottom: 24px;">
+                        <?php foreach ($statuses as $status): 
+                            $status_name = $status['name'];
+                            $status_count = $project_status_counts[$status_name] ?? 0;
+                            $status_color = $status['color'];
+                            $status_percentage = $overall_total > 0 ? ($status_count / $overall_total * 100) : 0;
+                        ?>
                         <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
-                            <div style="width: 12px; height: 12px; background: var(--chart-yellow); border-radius: 2px; flex-shrink: 0;"></div>
+                            <div style="width: 12px; height: 12px; background: <?php echo htmlspecialchars($status_color); ?>; border-radius: 2px; flex-shrink: 0;"></div>
                             <div style="flex: 1; height: 10px; background: #E5E7EB; border-radius: 5px; overflow: hidden;">
-                                <div style="height: 100%; background: var(--chart-yellow); width: <?php echo $overall_total > 0 ? ($overall_pending / $overall_total * 100) : 0; ?>%; transition: width 0.3s ease;"></div>
+                                <div style="height: 100%; background: <?php echo htmlspecialchars($status_color); ?>; width: <?php echo $status_percentage; ?>%; transition: width 0.3s ease;"></div>
                             </div>
-                            <span style="font-size: 12px; font-weight: 600; color: var(--text-primary); min-width: 35px; text-align: right;"><?php echo $overall_pending; ?></span>
+                            <span style="font-size: 12px; font-weight: 600; color: var(--text-primary); min-width: 35px; text-align: right;"><?php echo $status_count; ?></span>
                         </div>
-                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
-                            <div style="width: 12px; height: 12px; background: var(--chart-green); border-radius: 2px; flex-shrink: 0;"></div>
-                            <div style="flex: 1; height: 10px; background: #E5E7EB; border-radius: 5px; overflow: hidden;">
-                                <div style="height: 100%; background: var(--chart-green); width: <?php echo $overall_total > 0 ? ($overall_active / $overall_total * 100) : 0; ?>%; transition: width 0.3s ease;"></div>
-                            </div>
-                            <span style="font-size: 12px; font-weight: 600; color: var(--text-primary); min-width: 35px; text-align: right;"><?php echo $overall_active; ?></span>
-                        </div>
-                        <div style="display: flex; align-items: center; gap: 8px;">
-                            <div style="width: 12px; height: 12px; background: var(--chart-gray); border-radius: 2px; flex-shrink: 0;"></div>
-                            <div style="flex: 1; height: 10px; background: #E5E7EB; border-radius: 5px; overflow: hidden;">
-                                <div style="height: 100%; background: var(--chart-gray); width: <?php echo $overall_total > 0 ? ($overall_closed / $overall_total * 100) : 0; ?>%; transition: width 0.3s ease;"></div>
-                            </div>
-                            <span style="font-size: 12px; font-weight: 600; color: var(--text-primary); min-width: 35px; text-align: right;"><?php echo $overall_closed; ?></span>
-                        </div>
+                        <?php endforeach; ?>
                     </div>
                     
                     <!-- Vertical Bar Chart -->
@@ -1315,20 +1328,24 @@ include 'includes/header.php';
                         <h3 style="font-size: 13px; font-weight: 600; color: var(--text-secondary); margin: 0 0 16px 0; text-transform: uppercase; letter-spacing: 0.5px;">Status Overview</h3>
                         <div style="display: flex; align-items: flex-end; gap: 12px; height: 140px; padding: 0 8px;">
                             <?php 
-                            $bar_data = [
-                                ['label' => 'To Do', 'value' => $overall_pending, 'color' => 'var(--chart-yellow)'],
-                                ['label' => 'In Progress', 'value' => $overall_active, 'color' => 'var(--chart-green)'],
-                                ['label' => 'Closed', 'value' => $overall_closed, 'color' => 'var(--chart-gray)']
-                            ];
+                            $bar_data = [];
+                            foreach ($statuses as $status) {
+                                $status_name = $status['name'];
+                                $bar_data[] = [
+                                    'label' => $status_name,
+                                    'value' => $project_status_counts[$status_name] ?? 0,
+                                    'color' => $status['color']
+                                ];
+                            }
                             $max_bar = $overall_total > 0 ? $overall_total : 1;
                             foreach ($bar_data as $bar): 
                                 $height = ($bar['value'] / $max_bar) * 100;
                             ?>
                                 <div style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 8px;">
-                                    <div style="width: 100%; background: <?php echo $bar['color']; ?>; border-radius: 6px 6px 0 0; height: <?php echo max($height, 4); ?>%; min-height: 8px; transition: height 0.3s ease;" 
-                                         title="<?php echo $bar['label'] . ': ' . $bar['value']; ?>"></div>
+                                    <div style="width: 100%; background: <?php echo htmlspecialchars($bar['color']); ?>; border-radius: 6px 6px 0 0; height: <?php echo max($height, 4); ?>%; min-height: 8px; transition: height 0.3s ease;" 
+                                         title="<?php echo htmlspecialchars($bar['label']) . ': ' . $bar['value']; ?>"></div>
                                     <div style="font-size: 11px; font-weight: 600; color: var(--text-primary);"><?php echo $bar['value']; ?></div>
-                                    <div style="font-size: 10px; color: var(--text-secondary); text-align: center; line-height: 1.2;"><?php echo $bar['label']; ?></div>
+                                    <div style="font-size: 10px; color: var(--text-secondary); text-align: center; line-height: 1.2;"><?php echo htmlspecialchars($bar['label']); ?></div>
                                 </div>
                             <?php endforeach; ?>
                         </div>
@@ -1342,38 +1359,30 @@ include 'includes/header.php';
                         <svg width="140" height="140" viewBox="0 0 140 140">
                             <circle cx="70" cy="70" r="60" fill="none" stroke="#E5E7EB" stroke-width="14"/>
                             <?php 
-                            $todo_percent = $overall_total > 0 ? ($overall_pending / $overall_total) : 0;
-                            $inprogress_percent = $overall_total > 0 ? ($overall_active / $overall_total) : 0;
-                            $closed_percent = $overall_total > 0 ? ($overall_closed / $overall_total) : 0;
-                            ?>
-                            <?php 
+                            // Build circular gauge chart dynamically from statuses (use first 3 statuses)
                             $circumference = 2 * M_PI * 60;
-                            $todo_dash = $circumference * $todo_percent;
-                            $inprogress_dash = $circumference * $inprogress_percent;
-                            $closed_dash = $circumference * $closed_percent;
                             $start_offset = -$circumference * 0.25;
+                            $gauge_statuses = array_slice($statuses, 0, 3); // Use first 3 statuses for gauge
+                            
+                            foreach ($gauge_statuses as $gauge_status):
+                                $status_name = $gauge_status['name'];
+                                $status_count = $project_status_counts[$status_name] ?? 0;
+                                $status_percent = $overall_total > 0 ? ($status_count / $overall_total) : 0;
+                                $status_dash = $circumference * $status_percent;
+                                
+                                // Convert hex color to format for SVG (remove # if present)
+                                $status_color = ltrim($gauge_status['color'], '#');
+                                
+                                if ($status_count > 0):
                             ?>
-                            <?php if ($overall_pending > 0): ?>
-                            <circle cx="70" cy="70" r="60" fill="none" stroke="#F59E0B" 
-                                    stroke-width="14" stroke-dasharray="<?php echo $todo_dash; ?> <?php echo $circumference; ?>" 
+                            <circle cx="70" cy="70" r="60" fill="none" stroke="#<?php echo htmlspecialchars($status_color); ?>" 
+                                    stroke-width="14" stroke-dasharray="<?php echo $status_dash; ?> <?php echo $circumference; ?>" 
                                     stroke-dashoffset="<?php echo $start_offset; ?>" transform="rotate(-90 70 70)"/>
                             <?php 
-                            $start_offset += $todo_dash;
-                            endif;
-                            if ($overall_active > 0): 
+                                    $start_offset += $status_dash;
+                                endif;
+                            endforeach;
                             ?>
-                            <circle cx="70" cy="70" r="60" fill="none" stroke="#22C55E" 
-                                    stroke-width="14" stroke-dasharray="<?php echo $inprogress_dash; ?> <?php echo $circumference; ?>" 
-                                    stroke-dashoffset="<?php echo $start_offset; ?>" transform="rotate(-90 70 70)"/>
-                            <?php 
-                            $start_offset += $inprogress_dash;
-                            endif;
-                            if ($overall_closed > 0): 
-                            ?>
-                            <circle cx="70" cy="70" r="60" fill="none" stroke="#9CA3AF" 
-                                    stroke-width="14" stroke-dasharray="<?php echo $closed_dash; ?> <?php echo $circumference; ?>" 
-                                    stroke-dashoffset="<?php echo $start_offset; ?>" transform="rotate(-90 70 70)"/>
-                            <?php endif; ?>
                         </svg>
                         <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center;">
                             <div style="font-size: 24px; font-weight: 700; color: var(--text-primary); line-height: 1.2;"><?php echo $overall_total; ?></div>

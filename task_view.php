@@ -9,6 +9,10 @@ $conn = getDBConnection();
 $message = '';
 $error = '';
 
+// Get organization-specific statuses
+$organization_id = isSuperAdmin() ? null : getOrganizationId();
+$statuses = getStatuses($organization_id);
+
 function renderRichText($content) {
     if (empty($content)) {
         return '';
@@ -92,11 +96,13 @@ $edit_description_mode = isset($_GET['edit_description']) && $_GET['edit_descrip
 
 // Get task details
 $task = $conn->query("
-    SELECT t.*, p.name as project_name, u.full_name as assignee_name, u2.full_name as creator_name
+    SELECT t.*, p.name as project_name, u.full_name as assignee_name, u2.full_name as creator_name,
+           s.name as status_name, s.color as status_color
     FROM tasks t
     LEFT JOIN projects p ON t.project_id = p.id
     LEFT JOIN users u ON t.assignee_id = u.id
     LEFT JOIN users u2 ON t.created_by = u2.id
+    LEFT JOIN statuses s ON t.status_id = s.id
     WHERE t.id = $task_id
 ")->fetch_assoc();
 
@@ -170,35 +176,65 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['add_comment'])) {
 
 // Handle quick status update
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_status'])) {
-    $new_status = $_POST['status'];
-    // Map 'Closed' to 'Done' if database ENUM still uses 'Done' (temporary until migration)
-    // After running migration script, remove this mapping
-    // if ($new_status == 'Closed') $new_status = 'Done';
-    $old_status = $task['status'];
+    $new_status_id = intval($_POST['status_id']); // Now using status_id
     $user_id = $_SESSION['user_id'];
     
-    $stmt = $conn->prepare("UPDATE tasks SET status = ? WHERE id = ?");
-    $stmt->bind_param("si", $new_status, $task_id);
+    // Validate status_id against organization's statuses
+    $org_statuses = getStatuses($organization_id);
+    $valid_status_ids = array_column($org_statuses, 'id');
     
-    if ($stmt->execute()) {
-        // Log activity
-        $action = "Status changed";
-        $stmt2 = $conn->prepare("INSERT INTO activity_logs (task_id, user_id, action, old_value, new_value) VALUES (?, ?, ?, ?, ?)");
-        $stmt2->bind_param("iisss", $task_id, $user_id, $action, $old_status, $new_status);
-        $stmt2->execute();
-        
-        $message = 'Status updated successfully';
-        // Refresh task data
-        $task = $conn->query("
-            SELECT t.*, p.name as project_name, u.full_name as assignee_name, u2.full_name as creator_name
-            FROM tasks t
-            LEFT JOIN projects p ON t.project_id = p.id
-            LEFT JOIN users u ON t.assignee_id = u.id
-            LEFT JOIN users u2 ON t.created_by = u2.id
-            WHERE t.id = $task_id
-        ")->fetch_assoc();
+    if (!in_array($new_status_id, $valid_status_ids)) {
+        $error = 'Invalid status ID: ' . htmlspecialchars($new_status_id);
     } else {
-        $error = 'Error updating status';
+        // Get old status info
+        $old_task = $conn->prepare("SELECT t.status_id, s.name as status_name FROM tasks t LEFT JOIN statuses s ON t.status_id = s.id WHERE t.id = ?");
+        $old_task->bind_param("i", $task_id);
+        $old_task->execute();
+        $old_result = $old_task->get_result();
+        $old_task_data = $old_result->fetch_assoc();
+        $old_status_id = $old_task_data['status_id'] ?? null;
+        $old_status_name = $old_task_data['status_name'] ?? $task['status'] ?? 'Unknown';
+        $old_task->close();
+        
+        // Get new status name
+        $new_status_query = $conn->prepare("SELECT name FROM statuses WHERE id = ?");
+        $new_status_query->bind_param("i", $new_status_id);
+        $new_status_query->execute();
+        $new_status_result = $new_status_query->get_result();
+        $new_status_data = $new_status_result->fetch_assoc();
+        $new_status_name = $new_status_data['name'] ?? 'Unknown';
+        $new_status_query->close();
+        
+        // Update status_id and status name (for backward compatibility)
+        $stmt = $conn->prepare("UPDATE tasks SET status_id = ?, status = ? WHERE id = ?");
+        $stmt->bind_param("isi", $new_status_id, $new_status_name, $task_id);
+        
+        if ($stmt->execute()) {
+            // Log activity
+            if ($old_status_id != $new_status_id) {
+                $action = "Status changed";
+                $stmt2 = $conn->prepare("INSERT INTO activity_logs (task_id, user_id, action, old_value, new_value) VALUES (?, ?, ?, ?, ?)");
+                $stmt2->bind_param("iisss", $task_id, $user_id, $action, $old_status_name, $new_status_name);
+                $stmt2->execute();
+                $stmt2->close();
+            }
+            
+            $message = 'Status updated successfully';
+            // Refresh task data
+            $task = $conn->query("
+                SELECT t.*, p.name as project_name, u.full_name as assignee_name, u2.full_name as creator_name,
+                       s.name as status_name, s.color as status_color
+                FROM tasks t
+                LEFT JOIN projects p ON t.project_id = p.id
+                LEFT JOIN users u ON t.assignee_id = u.id
+                LEFT JOIN users u2 ON t.created_by = u2.id
+                LEFT JOIN statuses s ON t.status_id = s.id
+                WHERE t.id = $task_id
+            ")->fetch_assoc();
+        } else {
+            $error = 'Error updating status: ' . $conn->error;
+        }
+        $stmt->close();
     }
 }
 
@@ -380,11 +416,13 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_title'])) {
             $message = 'Title updated successfully';
             // Refresh task data
             $task = $conn->query("
-                SELECT t.*, p.name as project_name, u.full_name as assignee_name, u2.full_name as creator_name
+                SELECT t.*, p.name as project_name, u.full_name as assignee_name, u2.full_name as creator_name,
+                       s.name as status_name, s.color as status_color
                 FROM tasks t
                 LEFT JOIN projects p ON t.project_id = p.id
                 LEFT JOIN users u ON t.assignee_id = u.id
                 LEFT JOIN users u2 ON t.created_by = u2.id
+                LEFT JOIN statuses s ON t.status_id = s.id
                 WHERE t.id = $task_id
             ")->fetch_assoc();
         } else {
@@ -1948,16 +1986,23 @@ include 'includes/header.php';
         <!-- Metadata Bar -->
         <div class="task-metadata-bar">
             <?php 
-            $task_status_display = normalizeStatusForDisplay($task['status'] ?? 'To Do');
-            $status_lower = strtolower(str_replace(' ', '-', $task_status_display));
-            $status_class = 'metadata-status-pending';
-            if (strpos($status_lower, 'to-do') !== false || strpos($status_lower, 'todo') !== false) {
-                $status_class = 'metadata-status-pending';
-            } elseif (strpos($status_lower, 'in-progress') !== false || strpos($status_lower, 'inprogress') !== false) {
-                $status_class = 'metadata-status-active';
-            } elseif (strpos($status_lower, 'closed') !== false) {
-                $status_class = 'metadata-status-closed';
+            // Get status info for styling using status_id
+            $task_status_id = $task['status_id'] ?? null;
+            $task_status = $task['status'] ?? 'To Do';
+            
+            // Get status info by ID if available, otherwise by name
+            if ($task_status_id) {
+                $status_info = null;
+                foreach ($statuses as $s) {
+                    if ($s['id'] == $task_status_id) {
+                        $status_info = $s;
+                        break;
+                    }
+                }
+            } else {
+                $status_info = getStatusByName($task_status, $organization_id);
             }
+            $status_color = $status_info['color'] ?? '#6c757d';
             
             $priority_lower = strtolower($task['priority'] ?? '');
             $priority_class = 'metadata-priority-low';
@@ -1967,10 +2012,18 @@ include 'includes/header.php';
                 $priority_class = 'metadata-priority-medium';
             }
             ?>
-            <span class="task-metadata-badge <?php echo $status_class; ?>">
-                <span class="metadata-badge-dot"></span>
-                <?php echo htmlspecialchars($task_status_display); ?>
-            </span>
+            <form method="POST" action="" style="display: inline-block; margin: 0;">
+                <input type="hidden" name="update_status" value="1">
+                <select name="status_id" 
+                        onchange="this.form.submit();" 
+                        style="padding: 6px 32px 6px 12px; border: 1px solid var(--border-color); border-radius: 6px; background: <?php echo htmlspecialchars($status_color); ?>; color: white; font-size: 13px; font-weight: 500; cursor: pointer; appearance: none; background-image: url('data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 12 12\'%3E%3Cpath fill=\'%23ffffff\' d=\'M6 9L1 4h10z\'/%3E%3C/svg%3E'); background-repeat: no-repeat; background-position: right 12px center;">
+                    <?php foreach ($statuses as $status_option): ?>
+                        <option value="<?php echo $status_option['id']; ?>" <?php echo ($task_status_id == $status_option['id']) ? 'selected' : ''; ?>>
+                            <?php echo htmlspecialchars($status_option['name']); ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+            </form>
             <span class="task-metadata-badge <?php echo $priority_class; ?>">
                 <span class="metadata-badge-dot"></span>
                 <?php echo htmlspecialchars($task['priority'] ?? 'Low'); ?> Priority

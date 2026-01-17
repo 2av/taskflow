@@ -48,45 +48,37 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_profile'])) {
             $error = 'Email is already taken by another user';
         } else {
             // Handle profile picture upload
-            $profile_picture_url = $user['profile_picture'] ?? null;
+            $profile_picture_filename = $user['profile_picture'] ?? null;
             
             if (isset($_FILES['profile_picture']) && $_FILES['profile_picture']['error'] === UPLOAD_ERR_OK) {
-                if (function_exists('uploadImageFromFile')) {
-                    $upload_result = uploadImageFromFile($_FILES['profile_picture'], 'taskflow/profiles');
+                // Use local upload system
+                if (function_exists('uploadImageLocal')) {
+                    $upload_result = uploadImageLocal($_FILES['profile_picture'], 'profile', 204800); // 200KB max
                     
                     if ($upload_result['success']) {
-                        // Delete old profile picture from Cloudinary if exists
-                        if ($profile_picture_url && function_exists('deleteFromCloudinary')) {
-                            // Extract public_id from URL if it's a Cloudinary URL
-                            if (strpos($profile_picture_url, 'cloudinary.com') !== false) {
-                                preg_match('/\/([^\/]+)\/([^\/]+)\.(jpg|png|gif|webp)$/i', $profile_picture_url, $matches);
-                                if (isset($matches[1]) && isset($matches[2])) {
-                                    $public_id = $matches[1] . '/' . $matches[2];
-                                    deleteFromCloudinary($public_id);
-                                }
-                            }
+                        // Delete old profile picture if exists
+                        if ($profile_picture_filename && function_exists('deleteImageLocal')) {
+                            deleteImageLocal($profile_picture_filename, 'profile');
                         }
-                        $profile_picture_url = $upload_result['url'];
+                        // Store only GUID filename in database
+                        $profile_picture_filename = $upload_result['filename'];
                     } else {
                         $error = $upload_result['error'] ?? 'Failed to upload profile picture';
                     }
                 } else {
-                    // Fallback to local upload if Cloudinary not configured
-                    $upload_dir = __DIR__ . '/uploads/profiles/';
-                    if (!is_dir($upload_dir)) {
-                        mkdir($upload_dir, 0755, true);
-                    }
-                    
-                    $file_extension = pathinfo($_FILES['profile_picture']['name'], PATHINFO_EXTENSION);
-                    $new_filename = 'profile_' . $user_id . '_' . time() . '.' . $file_extension;
-                    $upload_path = $upload_dir . $new_filename;
-                    
-                    if (move_uploaded_file($_FILES['profile_picture']['tmp_name'], $upload_path)) {
-                        $profile_picture_url = 'uploads/profiles/' . $new_filename;
-                    } else {
-                        $error = 'Failed to upload profile picture';
-                    }
+                    $error = 'Upload system not available';
                 }
+            } elseif (isset($_FILES['profile_picture']) && $_FILES['profile_picture']['error'] !== UPLOAD_ERR_NO_FILE) {
+                // Handle upload errors
+                $error_messages = [
+                    UPLOAD_ERR_INI_SIZE => 'File exceeds 200KB limit',
+                    UPLOAD_ERR_FORM_SIZE => 'File exceeds 200KB limit',
+                    UPLOAD_ERR_PARTIAL => 'File was only partially uploaded',
+                    UPLOAD_ERR_NO_TMP_DIR => 'Missing temporary folder',
+                    UPLOAD_ERR_CANT_WRITE => 'Failed to write file to disk',
+                    UPLOAD_ERR_EXTENSION => 'A PHP extension stopped the file upload'
+                ];
+                $error = $error_messages[$_FILES['profile_picture']['error']] ?? 'Failed to upload profile picture';
             }
             
             if (empty($error)) {
@@ -108,10 +100,10 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_profile'])) {
                     $conn->query("ALTER TABLE users ADD COLUMN bio TEXT NULL AFTER phone");
                 }
                 
-                // Update user profile
-                if ($profile_picture_url) {
+                // Update user profile (store only GUID filename, not full URL)
+                if ($profile_picture_filename) {
                     $update_stmt = $conn->prepare("UPDATE users SET full_name = ?, email = ?, phone = ?, bio = ?, profile_picture = ? WHERE id = ?");
-                    $update_stmt->bind_param("sssssi", $full_name, $email, $phone, $bio, $profile_picture_url, $user_id);
+                    $update_stmt->bind_param("sssssi", $full_name, $email, $phone, $bio, $profile_picture_filename, $user_id);
                 } else {
                     $update_stmt = $conn->prepare("UPDATE users SET full_name = ?, email = ?, phone = ?, bio = ? WHERE id = ?");
                     $update_stmt->bind_param("ssssi", $full_name, $email, $phone, $bio, $user_id);
@@ -365,7 +357,23 @@ include 'includes/header.php';
         <div class="profile-avatar-section">
             <div class="profile-avatar" id="profileAvatar">
                 <?php if (!empty($user['profile_picture'])): ?>
-                    <img src="<?php echo htmlspecialchars($user['profile_picture']); ?>" alt="Profile Picture">
+                    <?php 
+                    // Get full URL from GUID filename (local storage)
+                    $profile_picture_url = getImageUrl($user['profile_picture'], 'profile');
+                    ?>
+                    <img src="<?php echo htmlspecialchars($profile_picture_url); ?>" alt="Profile Picture" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                    <div style="display: none; width: 100%; height: 100%; align-items: center; justify-content: center; color: white; font-size: 48px;">
+                        <?php 
+                        $name_parts = explode(' ', $user['full_name']);
+                        $initials = '';
+                        if (count($name_parts) >= 2) {
+                            $initials = strtoupper(substr($name_parts[0], 0, 1) . substr($name_parts[count($name_parts) - 1], 0, 1));
+                        } else {
+                            $initials = strtoupper(substr($user['full_name'], 0, 2));
+                        }
+                        echo htmlspecialchars($initials);
+                        ?>
+                    </div>
                 <?php else: ?>
                     <?php 
                     $name_parts = explode(' ', $user['full_name']);
@@ -414,6 +422,12 @@ include 'includes/header.php';
                 <label for="bio">Bio</label>
                 <textarea id="bio" name="bio" placeholder="Tell us about yourself..."><?php echo htmlspecialchars($user['bio'] ?? ''); ?></textarea>
                 <small>Optional. A brief description about yourself.</small>
+            </div>
+            
+            <div class="form-group">
+                <label for="profile_picture">Profile Picture</label>
+                <input type="file" id="profile_picture" name="profile_picture" accept="image/jpeg,image/png,image/gif,image/webp">
+                <small>Maximum file size: 200KB. Allowed formats: JPEG, PNG, GIF, WebP</small>
             </div>
         </div>
         

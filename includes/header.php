@@ -59,25 +59,52 @@ if (!isset($page_title)) {
     <nav class="navbar">
         <div class="nav-container">
             <div class="nav-brand">
-                <a href="dashboard">
+                <a href="dashboard" class="nav-brand-link">
                     <?php 
-                    // Show organization name directly without brackets
+                    // Get organization logo and name
+                    $org_logo = null;
+                    $org_name = null;
+                    $show_logo = false;
+                    
                     if (!empty($_SESSION['organization_id']) && !isSuperAdmin()) {
                         $conn = getDBConnection();
-                        $org_stmt = $conn->prepare("SELECT name FROM organizations WHERE id = ?");
+                        $org_stmt = $conn->prepare("SELECT name, logo FROM organizations WHERE id = ?");
                         $org_stmt->bind_param("i", $_SESSION['organization_id']);
                         $org_stmt->execute();
                         $org_result = $org_stmt->get_result();
                         if ($org_row = $org_result->fetch_assoc()) {
-                            echo htmlspecialchars($org_row['name']);
+                            $org_name = $org_row['name'];
+                            $org_logo = $org_row['logo'] ?? null;
+                            $show_logo = true;
                         }
                         $org_stmt->close();
                         $conn->close();
+                    }
+                    
+                    // Display logo if available, otherwise show default company logo
+                    if ($show_logo) {
+                        if (!empty($org_logo)) {
+                            $logo_url = getImageUrl($org_logo, 'organization');
+                            echo '<img src="' . htmlspecialchars($logo_url) . '" alt="' . htmlspecialchars($org_name ?? 'Organization') . '" class="nav-brand-logo" onerror="this.style.display=\'none\'; this.nextElementSibling.style.display=\'flex\';">';
+                            echo '<div class="nav-brand-logo-default" style="display: none;"><i class="fas fa-building"></i></div>';
+                        } else {
+                            // Show default company logo if no logo uploaded
+                            echo '<div class="nav-brand-logo-default"><i class="fas fa-building"></i></div>';
+                        }
                     } else {
-                        // For Super Admin or users without organization, show site name
-                        echo SITE_NAME;
+                        // For Super Admin or users without organization, show default logo
+                        echo '<div class="nav-brand-logo-default"><i class="fas fa-building"></i></div>';
                     }
                     ?>
+                    <span class="nav-brand-text">
+                        <?php 
+                        if ($org_name) {
+                            echo htmlspecialchars($org_name);
+                        } else {
+                            echo SITE_NAME;
+                        }
+                        ?>
+                    </span>
                 </a>
             </div>
             <div class="nav-menu" id="navMenu">
@@ -107,10 +134,21 @@ if (!isset($page_title)) {
                     $initials = strtoupper(substr($full_name, 0, 2));
                 }
                 
+                // Get user profile picture
+                $profile_picture = null;
+                $conn = getDBConnection();
+                $user_stmt = $conn->prepare("SELECT profile_picture FROM users WHERE id = ?");
+                $user_stmt->bind_param("i", $_SESSION['user_id']);
+                $user_stmt->execute();
+                $user_result = $user_stmt->get_result();
+                if ($user_row = $user_result->fetch_assoc()) {
+                    $profile_picture = $user_row['profile_picture'];
+                }
+                $user_stmt->close();
+                
                 // Get organization name if exists
                 $org_name = '';
                 if (!empty($_SESSION['organization_id'])) {
-                    $conn = getDBConnection();
                     $org_stmt = $conn->prepare("SELECT name FROM organizations WHERE id = ?");
                     $org_stmt->bind_param("i", $_SESSION['organization_id']);
                     $org_stmt->execute();
@@ -119,18 +157,37 @@ if (!isset($page_title)) {
                         $org_name = $org_row['name'];
                     }
                     $org_stmt->close();
-                    $conn->close();
                 }
+                $conn->close();
+                
+                // Get profile picture URL
+                $profile_picture_url = !empty($profile_picture) ? getImageUrl($profile_picture, 'profile') : null;
                 ?>
                 <button class="profile-circle-btn" id="profileBtn" onclick="toggleProfileDropdown()">
-                    <span class="profile-initials"><?php echo htmlspecialchars($initials); ?></span>
+                    <?php if ($profile_picture_url): ?>
+                        <img src="<?php echo htmlspecialchars($profile_picture_url); ?>" 
+                             alt="<?php echo htmlspecialchars($full_name); ?>" 
+                             class="profile-picture-img"
+                             onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                        <span class="profile-initials" style="display: none;"><?php echo htmlspecialchars($initials); ?></span>
+                    <?php else: ?>
+                        <span class="profile-initials"><?php echo htmlspecialchars($initials); ?></span>
+                    <?php endif; ?>
                 </button>
                 
                 <!-- Dropdown Menu -->
                 <div class="profile-dropdown" id="profileDropdownMenu">
                     <div class="profile-dropdown-header">
                         <div class="profile-dropdown-avatar">
-                            <span class="profile-initials-large"><?php echo htmlspecialchars($initials); ?></span>
+                            <?php if ($profile_picture_url): ?>
+                                <img src="<?php echo htmlspecialchars($profile_picture_url); ?>" 
+                                     alt="<?php echo htmlspecialchars($full_name); ?>" 
+                                     class="profile-picture-large"
+                                     onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                                <span class="profile-initials-large" style="display: none;"><?php echo htmlspecialchars($initials); ?></span>
+                            <?php else: ?>
+                                <span class="profile-initials-large"><?php echo htmlspecialchars($initials); ?></span>
+                            <?php endif; ?>
                         </div>
                         <div class="profile-dropdown-info">
                             <div class="profile-dropdown-name"><?php echo htmlspecialchars($_SESSION['full_name']); ?></div>
@@ -150,6 +207,10 @@ if (!isset($page_title)) {
                             <a href="edit_organization" class="profile-dropdown-item">
                                 <i class="fas fa-building"></i>
                                 <span>Edit Organization</span>
+                            </a>
+                            <a href="manage_statuses" class="profile-dropdown-item">
+                                <i class="fas fa-tags"></i>
+                                <span>Manage Statuses</span>
                             </a>
                             <a href="subscription" class="profile-dropdown-item">
                                 <i class="fas fa-credit-card"></i>
@@ -201,7 +262,15 @@ if (!isset($page_title)) {
     <div class="mobile-profile-dropdown" id="mobileProfileDropdown">
         <div class="mobile-profile-header">
             <div class="mobile-profile-avatar">
-                <span><?php echo htmlspecialchars($initials); ?></span>
+                <?php if ($profile_picture_url): ?>
+                    <img src="<?php echo htmlspecialchars($profile_picture_url); ?>" 
+                         alt="<?php echo htmlspecialchars($full_name); ?>" 
+                         class="mobile-profile-picture"
+                         onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                    <span style="display: none;"><?php echo htmlspecialchars($initials); ?></span>
+                <?php else: ?>
+                    <span><?php echo htmlspecialchars($initials); ?></span>
+                <?php endif; ?>
             </div>
             <div class="mobile-profile-info">
                 <div class="mobile-profile-name"><?php echo htmlspecialchars($_SESSION['full_name']); ?></div>
@@ -220,6 +289,10 @@ if (!isset($page_title)) {
                 <a href="edit_organization" class="mobile-profile-item">
                     <i class="fas fa-building"></i>
                     <span>Edit Organization</span>
+                </a>
+                <a href="manage_statuses" class="mobile-profile-item">
+                    <i class="fas fa-tags"></i>
+                    <span>Manage Statuses</span>
                 </a>
                 <a href="subscription" class="mobile-profile-item">
                     <i class="fas fa-credit-card"></i>
