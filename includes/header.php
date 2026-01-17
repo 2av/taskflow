@@ -86,7 +86,6 @@ if (!isset($page_title)) {
                     <a href="projects" class="nav-link" title="Projects"><i class="fas fa-folder nav-icon"></i><span class="nav-text">Projects</span></a>
                 <?php endif; ?>
                 <a href="tasks" class="nav-link" title="Tasks"><i class="fas fa-tasks nav-icon"></i><span class="nav-text">Tasks</span></a>
-                <a href="my_tasks" class="nav-link" title="My Tasks"><i class="fas fa-user-check nav-icon"></i><span class="nav-text">My Tasks</span></a>
                 <a href="calendar" class="nav-link" title="Calendar"><i class="fas fa-calendar-alt nav-icon"></i><span class="nav-text">Calendar</span></a>
                 <?php if (isSuperAdmin() || isOrgAdmin() || isProjectManager()): ?>
                     <a href="reports" class="nav-link" title="Reports"><i class="fas fa-chart-bar nav-icon"></i><span class="nav-text">Reports</span></a>
@@ -180,10 +179,7 @@ if (!isset($page_title)) {
             <i class="fas fa-tasks"></i>
             <span>Tasks</span>
         </a>
-        <a href="my_tasks" class="mobile-nav-link" title="My Tasks">
-            <i class="fas fa-user-check"></i>
-            <span>My Tasks</span>
-        </a>
+        
         <button class="mobile-nav-link mobile-nav-profile" id="mobileProfileBtn" onclick="toggleMobileProfileDropdown()">
             <i class="fas fa-user-circle"></i>
             <span>Profile</span>

@@ -37,14 +37,16 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['create_task'])) {
         }
         
         if (empty($error)) {
-        // Generate task ID
-        $project_code = $conn->query("SELECT name FROM projects WHERE id = $project_id")->fetch_assoc()['name'];
-        $project_code = strtoupper(substr(preg_replace('/[^A-Za-z0-9]/', '', $project_code), 0, 3));
+        // Generate task ID - include project_id to ensure uniqueness across organizations
+        $project_info = $conn->query("SELECT name, organization_id FROM projects WHERE id = $project_id")->fetch_assoc();
+        $project_code = strtoupper(substr(preg_replace('/[^A-Za-z0-9]/', '', $project_info['name']), 0, 3));
         $task_num = $conn->query("SELECT COUNT(*) as count FROM tasks WHERE project_id = $project_id")->fetch_assoc()['count'] + 1;
-        $task_id = $project_code . '-' . $task_num;
+        // Include project_id in task_id to ensure uniqueness: PROJ-PROJECTID-TASKNUM
+        $task_id = $project_code . '-' . $project_id . '-' . $task_num;
         
-        $stmt = $conn->prepare("INSERT INTO tasks (task_id, project_id, title, description, type, priority, assignee_id, due_date, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
-        $stmt->bind_param("sissssssi", $task_id, $project_id, $title, $description, $type, $priority, $assignee_id, $due_date, $created_by);
+        $status = 'To Do'; // Default status - will be saved as 'To Do', 'In Progress', or 'Closed'
+        $stmt = $conn->prepare("INSERT INTO tasks (task_id, project_id, title, description, type, priority, status, assignee_id, due_date, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        $stmt->bind_param("sisssssssi", $task_id, $project_id, $title, $description, $type, $priority, $status, $assignee_id, $due_date, $created_by);
         
         if ($stmt->execute()) {
             $task_insert_id = $conn->insert_id;
@@ -63,6 +65,38 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['create_task'])) {
     }
 }
 
+// Handle quick status update
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_status_quick'])) {
+    $task_id = intval($_POST['task_id']);
+    $new_status = $_POST['status'];
+    $user_id = $_SESSION['user_id'];
+    
+    // Get old status
+    $old_task = $conn->query("SELECT status FROM tasks WHERE id = $task_id")->fetch_assoc();
+    if ($old_task) {
+        $old_status = $old_task['status'];
+        
+        // Update status
+        $stmt = $conn->prepare("UPDATE tasks SET status = ? WHERE id = ?");
+        $stmt->bind_param("si", $new_status, $task_id);
+        
+        if ($stmt->execute()) {
+            // Log activity
+            if ($old_status != $new_status) {
+                $action = "Status changed";
+                $stmt2 = $conn->prepare("INSERT INTO activity_logs (task_id, user_id, action, old_value, new_value) VALUES (?, ?, ?, ?, ?)");
+                $stmt2->bind_param("iisss", $task_id, $user_id, $action, $old_status, $new_status);
+                $stmt2->execute();
+                $stmt2->close();
+            }
+            $message = 'Status updated successfully';
+        } else {
+            $error = 'Error updating status';
+        }
+        $stmt->close();
+    }
+}
+
 // Handle task update
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_task'])) {
     $task_id = intval($_POST['task_id']);
@@ -71,6 +105,9 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_task'])) {
     $type = $_POST['type'];
     $priority = $_POST['priority'];
     $status = $_POST['status'];
+    // Map 'Closed' to 'Done' if database ENUM still uses 'Done' (temporary until migration)
+    // After running migration script, remove this mapping
+    // if ($status == 'Closed') $status = 'Done';
     $assignee_id = !empty($_POST['assignee_id']) ? intval($_POST['assignee_id']) : null;
     $due_date = !empty($_POST['due_date']) ? $_POST['due_date'] : null;
     
@@ -146,9 +183,11 @@ if (isset($_GET['project_id']) && !empty($_GET['project_id'])) {
 }
 
 // Get filter values (support multiple selections)
-// Use URL project_id if present, otherwise use session project_id, otherwise empty
+// Use URL project_id if present, otherwise use session project_id from dashboard, otherwise empty
 if (isset($_GET['project_id']) && !empty($_GET['project_id'])) {
     $filter_project = is_array($_GET['project_id']) ? array_map('intval', $_GET['project_id']) : [intval($_GET['project_id'])];
+    // Store in session for persistence
+    $_SESSION['selected_project_id'] = $filter_project[0];
 } elseif (isset($_SESSION['selected_project_id']) && !empty($_SESSION['selected_project_id'])) {
     // Use session project_id if no URL parameter (persist from dashboard click)
     $filter_project = [intval($_SESSION['selected_project_id'])];
@@ -186,18 +225,8 @@ if (isset($_GET['assignee_id']) && !empty($_GET['assignee_id'])) {
     $filter_assignee = is_array($_GET['assignee_id']) ? array_map('intval', $_GET['assignee_id']) : [intval($_GET['assignee_id'])];
     // Keep 0 for unassigned filter, but filter out empty values
     $filter_assignee = array_filter($filter_assignee, function($val) { return $val !== '' && $val !== null; });
-} elseif (!isset($_GET['assignee_id'])) {
-    // assignee_id is NOT in URL at all - this could be:
-    // 1. First page load (no filters) - auto-select current user for Admins/Org Admins
-    // 2. Reset button clicked (other filters present) - don't auto-select
-    $current_user_id = $_SESSION['user_id'];
-    // Only auto-select on first load when no other filters are present
-    $has_other_filters = isset($_GET['project_id']) || isset($_GET['status']) || isset($_GET['search']);
-    if (!$has_other_filters && (isAdmin() || isOrgAdmin())) {
-        $filter_assignee = [$current_user_id];
-    }
-    // If has other filters, $filter_assignee stays empty (reset was clicked)
 }
+// Removed auto-select assignee filter - show all tasks by default
 
 $search = isset($_GET['search']) ? trim($_GET['search']) : '';
 
@@ -219,10 +248,21 @@ if (!empty($filter_project)) {
 }
 
 if (!empty($filter_status)) {
-    $placeholders = implode(',', array_fill(0, count($filter_status), '?'));
+    // Map 'Closed' filter to include both 'Closed' and 'Done' for backward compatibility
+    $mapped_status = [];
+    foreach ($filter_status as $status) {
+        if ($status == 'Closed') {
+            $mapped_status[] = 'Closed';
+            $mapped_status[] = 'Done'; // Include old 'Done' status
+        } else {
+            $mapped_status[] = $status;
+        }
+    }
+    $mapped_status = array_unique($mapped_status);
+    $placeholders = implode(',', array_fill(0, count($mapped_status), '?'));
     $where_conditions[] = "t.status IN ($placeholders)";
-    $query_params = array_merge($query_params, $filter_status);
-    $query_types .= str_repeat('s', count($filter_status));
+    $query_params = array_merge($query_params, $mapped_status);
+    $query_types .= str_repeat('s', count($mapped_status));
 }
 
 if (!empty($filter_priority)) {
@@ -272,7 +312,13 @@ if (isSuperAdmin()) {
 } else if (!isProjectManager()) {
     // Team members only see their assigned tasks or tasks in their projects
     $user_id = $_SESSION['user_id'];
-    $where_conditions[] = "(t.assignee_id = $user_id OR t.project_id IN (SELECT project_id FROM project_users WHERE user_id = $user_id))";
+    // Don't add this condition if assignee filter is already set
+    if (empty($filter_assignee)) {
+        $where_conditions[] = "(t.assignee_id = $user_id OR t.project_id IN (SELECT project_id FROM project_users WHERE user_id = $user_id))";
+    } else {
+        // If assignee filter is set, still need to check project access
+        $where_conditions[] = "t.project_id IN (SELECT project_id FROM project_users WHERE user_id = $user_id)";
+    }
 } else {
     // Project Manager sees tasks in their assigned projects
     $user_id = $_SESSION['user_id'];
@@ -318,7 +364,8 @@ $total_pages = ceil($total_items / $items_per_page);
 
 // Get tasks with pagination
 $query = "
-    SELECT t.*, p.name as project_name, u.full_name as assignee_name, u2.full_name as creator_name
+    SELECT t.*, p.name as project_name, u.full_name as assignee_name, u2.full_name as creator_name,
+           COALESCE(t.status, 'To Do') as status
     FROM tasks t
     LEFT JOIN projects p ON t.project_id = p.id
     LEFT JOIN users u ON t.assignee_id = u.id
@@ -331,18 +378,27 @@ $query = "
 // Always add pagination parameters
 if (empty($query_params)) {
     $query_params = [];
+    $query_types = '';
 }
 $query_params[] = $items_per_page;
 $query_params[] = $offset;
 $query_types .= 'ii';
 
+    // Execute query (always has LIMIT and OFFSET parameters)
     $stmt = $conn->prepare($query);
     if ($stmt) {
-        $stmt->bind_param($query_types, ...$query_params);
+        if (!empty($query_params) && !empty($query_types)) {
+            $stmt->bind_param($query_types, ...$query_params);
+        }
         $stmt->execute();
         $tasks = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
     } else {
         $tasks = [];
+        error_log("Tasks query prepare failed: " . $conn->error);
+        error_log("Query: " . $query);
+        error_log("Query types: " . $query_types);
+        error_log("Query params count: " . count($query_params));
     }
 
 // Get task statistics based on current filters (excluding status and assignee filters)
@@ -398,7 +454,7 @@ $stats_query = "
         COUNT(*) as total_tasks,
         SUM(CASE WHEN t.status = 'To Do' THEN 1 ELSE 0 END) as todo_count,
         SUM(CASE WHEN t.status = 'In Progress' THEN 1 ELSE 0 END) as inprogress_count,
-        SUM(CASE WHEN t.status = 'Done' THEN 1 ELSE 0 END) as done_count
+        SUM(CASE WHEN t.status = 'Closed' OR t.status = 'Done' THEN 1 ELSE 0 END) as closed_count
     FROM tasks t
     LEFT JOIN projects p ON t.project_id = p.id
     LEFT JOIN users u ON t.assignee_id = u.id
@@ -679,7 +735,7 @@ function generatePagination($current_page, $total_pages, $get_params = []) {
         return '';
     }
     
-    $html = '<div class="pagination">';
+    $html = '';
     
     // Previous button
     if ($current_page > 1) {
@@ -692,8 +748,8 @@ function generatePagination($current_page, $total_pages, $get_params = []) {
     }
     
     // Page numbers
-    $start_page = max(1, $current_page - 2);
-    $end_page = min($total_pages, $current_page + 2);
+    $start_page = max(1, $current_page - 1);
+    $end_page = min($total_pages, $current_page + 1);
     
     if ($start_page > 1) {
         $first_params = $get_params;
@@ -701,7 +757,7 @@ function generatePagination($current_page, $total_pages, $get_params = []) {
         $first_url = '?' . http_build_query($first_params);
         $html .= '<a href="' . htmlspecialchars($first_url) . '" class="pagination-btn" data-page="1">1</a>';
         if ($start_page > 2) {
-            $html .= '<span class="pagination-ellipsis">...</span>';
+            $html .= '<span style="padding: 0 8px; color: var(--text-muted);">...</span>';
         }
     }
     
@@ -718,7 +774,7 @@ function generatePagination($current_page, $total_pages, $get_params = []) {
     
     if ($end_page < $total_pages) {
         if ($end_page < $total_pages - 1) {
-            $html .= '<span class="pagination-ellipsis">...</span>';
+            $html .= '<span style="padding: 0 8px; color: var(--text-muted);">...</span>';
         }
         $last_params = $get_params;
         $last_params['page'] = $total_pages;
@@ -736,7 +792,6 @@ function generatePagination($current_page, $total_pages, $get_params = []) {
         $html .= '<span class="pagination-btn disabled"><i class="fas fa-chevron-right"></i></span>';
     }
     
-    $html .= '</div>';
     return $html;
 }
 
@@ -746,10 +801,24 @@ function renderCustomMultiselect($name, $options, $selected_values = [], $search
     $counter++;
     $unique_id = $name . '_' . $counter;
     
+    // Get selected labels for display
+    $selected_labels = [];
+    foreach ($selected_values as $val) {
+        if (isset($options[$val])) {
+            $selected_labels[] = $options[$val];
+        }
+    }
+    $display_text = empty($selected_labels) ? 'Select...' : (count($selected_labels) == 1 ? $selected_labels[0] : count($selected_labels) . ' selected');
+    
     $html = '<div class="custom-multiselect">';
     $html .= '<div class="custom-multiselect-display">';
-    $html .= '<span class="placeholder">Select...</span>';
-    $html .= '<span class="selected-count" style="display: none;">0 selected</span>';
+    if (empty($selected_labels)) {
+        $html .= '<span class="placeholder">Select...</span>';
+        $html .= '<span class="selected-count" style="display: none;"></span>';
+    } else {
+        $html .= '<span class="placeholder" style="display: none;">Select...</span>';
+        $html .= '<span class="selected-count">' . htmlspecialchars($display_text) . '</span>';
+    }
     $html .= '<span class="arrow">▼</span>';
     $html .= '</div>';
     $html .= '<div class="custom-multiselect-dropdown">';
@@ -941,10 +1010,10 @@ if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQ
             if (!$due_date) {
                 $due_date_style = $due_date_styles['nodate'];
                 $due_date_display = 'No due date';
-            } elseif ($task['status'] == 'Done') {
+            } elseif ($task['status'] == 'Closed') {
                 $due_date_style = $due_date_styles['normal'];
                 $due_date_display = formatDate($due_date);
-            } elseif (strtotime($due_date) < time()) {
+            } elseif (strtotime($due_date) < time() && $task['status'] != 'Closed') {
                 $due_date_style = $due_date_styles['overdue'];
                 $due_date_display = formatDate($due_date);
             } elseif (strtotime($due_date) <= strtotime('+3 days')) {
@@ -974,7 +1043,7 @@ if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQ
             $tasks_html .= '<td class="px-6 py-4 whitespace-nowrap text-center">';
             $tasks_html .= '<span class="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full ' . $status_style['bg'] . ' ' . $status_style['text'] . '">';
             $tasks_html .= '<i class="fas ' . $status_style['icon'] . ' ' . $status_style['icon_color'] . ' text-xs"></i>';
-            $tasks_html .= htmlspecialchars($task['status']);
+            $tasks_html .= htmlspecialchars(normalizeStatusForDisplay($task['status'] ?? 'To Do'));
             $tasks_html .= '</span>';
             $tasks_html .= '</td>';
             $tasks_html .= '<td class="px-6 py-4 whitespace-nowrap text-center">';
@@ -1011,21 +1080,21 @@ if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQ
         'All' => intval($task_stats['total_tasks']),
         'To Do' => intval($task_stats['todo_count']),
         'In Progress' => intval($task_stats['inprogress_count']),
-        'Done' => intval($task_stats['done_count'])
+        'Closed' => intval($task_stats['closed_count'])
     ];
     
     $status_colors = [
         'All' => '#6c757d',
         'To Do' => '#ffc107',
         'In Progress' => '#17a2b8',
-        'Done' => '#28a745'
+        'Closed' => '#6c757d'
     ];
     
     $status_icons = [
         'All' => 'fa-tasks',
         'To Do' => 'fa-clock',
         'In Progress' => 'fa-spinner',
-        'Done' => 'fa-check-circle'
+        'Closed' => 'fa-check-circle'
     ];
     
     $current_filter_status = isset($_GET['status']) ? (is_array($_GET['status']) ? $_GET['status'] : [$_GET['status']]) : [];
@@ -1177,24 +1246,393 @@ $conn->close();
 include 'includes/header.php';
 ?>
 
-<div style="width: 100%; padding: 15px;">
-    <!-- Page Header -->
-    <div class="flex items-center justify-between mb-6">
-        <div class="flex items-center gap-3">
-            <a href="dashboard" class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-2 rounded-lg font-medium transition-colors duration-200 flex items-center justify-center shadow-sm hover:shadow-md" title="Back to Dashboard" style="min-width: 40px; min-height: 40px;">
-                <i class="fas fa-arrow-left"></i>
-            </a>
-            <h1 class="text-2xl md:text-3xl font-semibold text-gray-900 page-title">
-                Tasks<?php echo $selected_project_name ? ' <span class="text-gray-500 font-normal">(' . htmlspecialchars($selected_project_name) . ')</span>' : ''; ?>
-            </h1>
-        </div>
-    <?php if (isAdmin() || isProjectManager()): ?>
-            <a href="task_form" class="bg-teal-600 hover:bg-teal-700 text-white px-3 py-2 md:px-4 md:py-2 rounded-lg font-medium transition-colors duration-200 flex items-center justify-center gap-2 shadow-md hover:shadow-lg add-task-btn" title="Add New Task" style="min-width: 44px; min-height: 44px;">
+<style>
+.tasks-page-container {
+    padding: 24px;
+    background: var(--page-bg);
+    min-height: calc(100vh - 60px);
+}
+
+.tasks-overview-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 24px;
+}
+
+.tasks-overview-title {
+    font-size: 20px;
+    font-weight: 500;
+    color: var(--text-primary);
+    margin: 0;
+}
+
+.tasks-summary-stats {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 24px;
+}
+
+.stat-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-primary);
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    text-decoration: none;
+    transition: all 0.2s ease;
+}
+
+.stat-badge:hover {
+    border-color: var(--blue);
+    background: var(--blue-light);
+}
+
+.stat-badge.active {
+    background: var(--blue);
+    color: white;
+    border-color: var(--blue);
+}
+
+.stat-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.stat-dot.active { background: var(--chart-green); }
+.stat-dot.pending { background: var(--chart-yellow); }
+.stat-dot.failed { background: var(--chart-red); }
+.stat-dot.closed { background: var(--chart-gray); }
+
+.add-task-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 20px;
+    background: var(--blue);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 500;
+    text-decoration: none;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.add-task-btn:hover {
+    background: var(--blue-dark);
+}
+
+.tasks-filters-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+}
+
+.search-input-wrapper {
+    flex: 1;
+    min-width: 250px;
+    position: relative;
+}
+
+.search-input {
+    width: 100%;
+    padding: 10px 40px 10px 40px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    font-size: 14px;
+    background: var(--card-bg);
+    color: var(--text-primary);
+    transition: all 0.2s ease;
+}
+
+.search-input:focus {
+    outline: none;
+    border-color: var(--blue);
+    box-shadow: 0 0 0 3px var(--blue-light);
+}
+
+.search-icon {
+    position: absolute;
+    left: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-muted);
+    font-size: 14px;
+}
+
+.filter-dropdown {
+    padding: 10px 36px 10px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    font-size: 14px;
+    background: var(--card-bg);
+    color: var(--text-primary);
+    cursor: pointer;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236B7280' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    transition: all 0.2s ease;
+    min-width: 120px;
+}
+
+.filter-dropdown:hover {
+    border-color: var(--blue);
+}
+
+.filter-dropdown:focus {
+    outline: none;
+    border-color: var(--blue);
+    box-shadow: 0 0 0 3px var(--blue-light);
+}
+
+.tasks-table-container {
+    background: var(--card-bg);
+    border-radius: 10px;
+    border: 1px solid var(--border-color);
+    box-shadow: 0 1px 3px var(--shadow);
+    overflow: hidden;
+}
+
+.tasks-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.tasks-table thead {
+    background: var(--text-primary);
+}
+
+.tasks-table th {
+    padding: 12px 16px;
+    text-align: left;
+    font-size: 12px;
+    font-weight: 500;
+    color: white;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.tasks-table th:first-child {
+    width: 40px;
+    text-align: center;
+}
+
+.tasks-table tbody tr {
+    border-bottom: 1px solid var(--border-color);
+    transition: background-color 0.2s ease;
+}
+
+.tasks-table tbody tr:hover {
+    background: var(--blue-light);
+}
+
+.tasks-table tbody tr:last-child {
+    border-bottom: none;
+}
+
+.tasks-table td {
+    padding: 16px;
+    font-size: 14px;
+    color: var(--text-primary);
+}
+
+.task-checkbox {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+    accent-color: var(--blue);
+}
+
+.task-name-cell {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.task-name-text {
+    font-weight: 400;
+    color: var(--text-primary);
+}
+
+.task-project {
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+
+.table-status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+.table-status-badge .badge-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+}
+
+.table-status-active {
+    background: var(--chart-green);
+    color: white;
+}
+
+.table-status-active .badge-dot {
+    background: white;
+}
+
+.table-status-pending {
+    background: var(--chart-yellow);
+    color: var(--text-primary);
+}
+
+.table-status-pending .badge-dot {
+    background: var(--text-primary);
+}
+
+.table-status-failed {
+    background: var(--chart-red);
+    color: white;
+}
+
+.table-status-failed .badge-dot {
+    background: white;
+}
+
+.table-status-closed {
+    background: var(--closed-bg);
+    color: var(--closed-text);
+}
+
+.table-status-closed .badge-dot {
+    background: var(--closed-text);
+}
+
+.table-priority-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+.priority-high {
+    background: var(--chart-yellow);
+    color: var(--text-primary);
+}
+
+.priority-medium {
+    background: var(--chart-red);
+    color: white;
+}
+
+.priority-low {
+    background: var(--chart-gray);
+    color: var(--text-primary);
+}
+
+.assignee-avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 600;
+    background: var(--blue-light);
+    color: var(--blue-dark);
+}
+
+.due-date-text {
+    font-size: 13px;
+    color: var(--text-primary);
+}
+
+.pagination-container {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 24px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border-color);
+}
+
+.pagination-info {
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.pagination-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.pagination-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--card-bg);
+    color: var(--text-primary);
+    text-decoration: none;
+    font-size: 13px;
+    font-weight: 500;
+    transition: all 0.2s ease;
+    cursor: pointer;
+}
+
+.pagination-btn:hover:not(.disabled):not(.active) {
+    border-color: var(--blue);
+    color: var(--blue);
+}
+
+.pagination-btn.active {
+    background: var(--blue);
+    color: white;
+    border-color: var(--blue);
+}
+
+.pagination-btn.disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+</style>
+
+<div class="tasks-page-container">
+    <!-- Tasks Overview Header -->
+    <div class="tasks-overview-header">
+        <h2 class="tasks-overview-title">Tasks Overview</h2>
+        <?php if (isAdmin() || isProjectManager()): ?>
+            <button type="button" class="add-task-btn" onclick="openAddTaskModal()">
                 <i class="fas fa-plus"></i>
-                <span class="add-task-text hidden md:inline">Add New Task</span>
-            </a>
-    <?php endif; ?>
-</div>
+                <span>Add Task</span>
+            </button>
+        <?php endif; ?>
+    </div>
 
 <?php if ($message): ?>
         <div class="mb-4 bg-green-50 border border-green-200 text-green-800 px-4 py-3 rounded-lg flex items-center gap-2">
@@ -1210,388 +1648,376 @@ include 'includes/header.php';
         </div>
 <?php endif; ?>
 
-    <!-- Task Management Filter -->
-    <div class="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-6">
-        <div class="flex items-center gap-2 flex-wrap">
-                <?php 
-        $status_counts = [
-            'All' => intval($task_stats['total_tasks']),
-            'To Do' => intval($task_stats['todo_count']),
-            'In Progress' => intval($task_stats['inprogress_count']),
-            'Done' => intval($task_stats['done_count'])
-        ];
+    <!-- Task Summary Statistics -->
+    <div class="tasks-summary-stats">
+        <?php 
+        // Calculate status counts - To Do, In Progress, Closed
+        $todo_count = intval($task_stats['todo_count'] ?? 0);
+        $inprogress_count = intval($task_stats['inprogress_count'] ?? 0);
+        $closed_count = intval($task_stats['closed_count'] ?? 0);
         
-        $status_colors = [
-            'All' => '#6c757d',
-            'To Do' => '#ffc107',
-            'In Progress' => '#17a2b8',
-            'Done' => '#28a745'
-        ];
-        
-        $status_icons = [
-            'All' => 'fa-tasks',
-            'To Do' => 'fa-clock',
-            'In Progress' => 'fa-spinner',
-            'Done' => 'fa-check-circle'
-        ];
-        
-        foreach ($status_counts as $status => $count):
-            $is_active = (empty($filter_status) && $status == 'All') || (!empty($filter_status) && in_array($status, $filter_status));
-            $filter_url = 'tasks?';
+        // Build filter URLs
+        function buildFilterUrl($params) {
             $url_params = [];
-            // Preserve project filter if exists
-            if (!empty($filter_project)) {
-                $url_params['project_id'] = $filter_project[0];
-            } elseif (isset($_SESSION['selected_project_id']) && !empty($_SESSION['selected_project_id'])) {
-                $url_params['project_id'] = $_SESSION['selected_project_id'];
+            if (!empty($params['project_id'])) {
+                $url_params['project_id'] = $params['project_id'];
             }
-            // Set status filter (or remove if All is selected)
-            if ($status != 'All') {
-                $url_params['status'] = $status;
+            if (!empty($params['status'])) {
+                $url_params['status'] = $params['status'];
             }
-            // Preserve assignee filter if exists (all selected assignees)
-            if (!empty($filter_assignee)) {
-                $url_params['assignee_id'] = $filter_assignee;
+            if (!empty($params['assignee_id'])) {
+                $url_params['assignee_id'] = $params['assignee_id'];
             }
-            // Preserve search if exists
-            if (!empty($search)) {
-                $url_params['search'] = $search;
+            if (!empty($params['search'])) {
+                $url_params['search'] = $params['search'];
             }
-            $filter_url .= http_build_query($url_params);
-        ?>
-            <a href="<?php echo htmlspecialchars($filter_url); ?>" 
-               class="inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold transition-all duration-200 <?php echo $is_active ? 'text-white shadow-md' : 'bg-white text-gray-700 hover:text-white border-2'; ?>"
-               style="background: <?php echo $is_active ? $status_colors[$status] : '#fff'; ?>; border-color: <?php echo $status_colors[$status]; ?>;"
-               onmouseover="this.style.background='<?php echo $status_colors[$status]; ?>'; this.style.color='#fff';"
-               onmouseout="this.style.background='<?php echo $is_active ? $status_colors[$status] : '#fff'; ?>'; this.style.color='<?php echo $is_active ? '#fff' : '#333'; ?>';"
-               title="Filter by <?php echo htmlspecialchars($status); ?>">
-                <i class="fas <?php echo $status_icons[$status]; ?>"></i>
-                <span><?php echo htmlspecialchars($status); ?></span>
-                <span class="px-2 py-0.5 rounded-full text-xs font-bold <?php echo $is_active ? 'bg-white bg-opacity-30' : ''; ?>" style="background: <?php echo $is_active ? 'rgba(255,255,255,0.3)' : $status_colors[$status]; ?>; color: #fff;">
-                    <?php echo $count; ?>
-                </span>
-            </a>
-        <?php endforeach; ?>
+            return 'tasks?' . http_build_query($url_params);
+        }
         
-                <?php 
-        // Show assignee badges and unassigned
-        // Note: $unassigned_count is already calculated above before connection was closed
-        if (!empty($assignee_stats) || $unassigned_count > 0): ?>
-            <div class="flex items-center gap-2 flex-wrap justify-end"> |
-                <!-- All Assignees Filter (Reset) -->
-                <?php 
-                $has_assignee_filter = !empty($filter_assignee);
-                $all_assignees_url = 'tasks.php?';
-                $all_assignees_params = [];
-                // Preserve project filter if exists
-                if (!empty($filter_project)) {
-                    $all_assignees_params['project_id'] = $filter_project[0];
-                } elseif (isset($_SESSION['selected_project_id']) && !empty($_SESSION['selected_project_id'])) {
-                    $all_assignees_params['project_id'] = $_SESSION['selected_project_id'];
-                }
-                // Preserve status filter if exists
-                if (!empty($filter_status)) {
-                    $all_assignees_params['status'] = is_array($filter_status) ? $filter_status : $filter_status;
-                }
-                // Preserve search if exists
-                if (!empty($search)) {
-                    $all_assignees_params['search'] = $search;
-                }
-                // Explicitly clear assignee_id from session when reset is clicked
-                // Don't include assignee_id in URL params - this will clear the filter
-                $all_assignees_url .= http_build_query($all_assignees_params);
-                // Add a parameter to clear the session project selection if needed
-                if (empty($all_assignees_params)) {
-                    $all_assignees_url = 'tasks';
-                }
-                ?>
-            <a href="<?php echo htmlspecialchars($all_assignees_url); ?>" 
-               class="inline-flex items-center justify-center w-10 h-10 rounded-full text-sm font-semibold transition-all duration-200 <?php echo !$has_assignee_filter ? 'bg-indigo-600 text-white shadow-md' : 'bg-white text-gray-700 hover:bg-indigo-600 hover:text-white border-2 border-indigo-600'; ?>"
-               title="Reset Assignee Filter (Clear All Selections)"
-               style="min-width: 40px; min-height: 40px;">
-                <i class="fas fa-redo"></i>
-            </a>
-                
-                <!-- Unassigned Filter -->
-                <?php if ($unassigned_count > 0): 
-                    $is_unassigned_active = !empty($filter_assignee) && in_array(0, $filter_assignee);
-                    
-                    // Toggle logic: if active, remove it; if not active, add it
-                    $new_filter_assignee = $filter_assignee;
-                    if ($is_unassigned_active) {
-                        // Remove from filter
-                        $new_filter_assignee = array_values(array_filter($new_filter_assignee, function($val) {
-                            return $val != 0;
-                        }));
-                    } else {
-                        // Add to filter
-                        $new_filter_assignee[] = 0;
-                        $new_filter_assignee = array_values(array_unique($new_filter_assignee));
-                    }
-                    
-                    $filter_url = 'tasks?';
-                    $url_params = [];
-                    if (!empty($filter_project)) {
-                        $url_params['project_id'] = $filter_project[0];
-                    } elseif (isset($_SESSION['selected_project_id']) && !empty($_SESSION['selected_project_id'])) {
-                        $url_params['project_id'] = $_SESSION['selected_project_id'];
-                    }
-                    if (!empty($filter_status)) {
-                        $url_params['status'] = is_array($filter_status) ? $filter_status : $filter_status;
-                    }
-                    // Set assignee filter (multiple selections)
-                    if (!empty($new_filter_assignee)) {
-                        $url_params['assignee_id'] = $new_filter_assignee;
-                    }
-                    if (!empty($search)) {
-                        $url_params['search'] = $search;
-                    }
-                    $filter_url .= http_build_query($url_params);
-                ?>
-                    <a href="<?php echo htmlspecialchars($filter_url); ?>" 
-                       class="inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold transition-all duration-200 <?php echo $is_unassigned_active ? 'bg-indigo-600 text-white shadow-md' : 'bg-white text-gray-700 hover:bg-indigo-600 hover:text-white border-2 border-indigo-600'; ?>"
-                       title="Filter by Unassigned">
-                        <i class="fas fa-user-slash"></i>
-                        <span>Unassigned</span>
-                    </a>
-                <?php endif; ?>
-                
-                <?php foreach ($assignee_stats as $assignee): 
-                    $initials = getInitials($assignee['full_name']);
-                    $is_active = !empty($filter_assignee) && in_array($assignee['id'], $filter_assignee);
-                    
-                    // Toggle logic: if active, remove it; if not active, add it
-                    $new_filter_assignee = $filter_assignee;
-                    if ($is_active) {
-                        // Remove from filter
-                        $new_filter_assignee = array_values(array_filter($new_filter_assignee, function($val) use ($assignee) {
-                            return $val != $assignee['id'];
-                        }));
-                    } else {
-                        // Add to filter
-                        $new_filter_assignee[] = $assignee['id'];
-                        $new_filter_assignee = array_values(array_unique($new_filter_assignee));
-                    }
-                    
-                    $filter_url = 'tasks?';
-                    $url_params = [];
-                    // Preserve project filter if exists
-                    if (!empty($filter_project)) {
-                        $url_params['project_id'] = $filter_project[0];
-                    } elseif (isset($_SESSION['selected_project_id']) && !empty($_SESSION['selected_project_id'])) {
-                        $url_params['project_id'] = $_SESSION['selected_project_id'];
-                    }
-                    // Preserve status filter if exists
-                    if (!empty($filter_status)) {
-                        $url_params['status'] = is_array($filter_status) ? $filter_status : $filter_status;
-                    }
-                    // Set assignee filter (multiple selections)
-                    if (!empty($new_filter_assignee)) {
-                        $url_params['assignee_id'] = $new_filter_assignee;
-                    }
-                    // Preserve search if exists
-                    if (!empty($search)) {
-                        $url_params['search'] = $search;
-                    }
-                    $filter_url .= http_build_query($url_params);
-                ?>
-                <a href="<?php echo htmlspecialchars($filter_url); ?>" 
-                   class="inline-flex items-center justify-center w-10 h-10 rounded-full text-sm font-semibold transition-all duration-200 <?php echo $is_active ? 'bg-indigo-600 text-white shadow-md ring-2 ring-indigo-300' : 'bg-white text-gray-700 hover:bg-indigo-600 hover:text-white border-2 border-indigo-600'; ?>"
-                   title="<?php echo htmlspecialchars($assignee['full_name']); ?>"
-                   style="min-width: 40px; min-height: 40px;">
-                    <span><?php echo htmlspecialchars($initials); ?></span>
-                </a>
-                <?php endforeach; ?>
-            </div>
-        <?php endif; ?>
-        </div>
-</div>
+        $base_params = [
+            'project_id' => !empty($filter_project) ? $filter_project[0] : null,
+            'assignee_id' => $filter_assignee,
+            'search' => $search
+        ];
+        
+        $is_todo_active = !empty($filter_status) && in_array('To Do', $filter_status);
+        $is_inprogress_active = !empty($filter_status) && in_array('In Progress', $filter_status);
+        $is_closed_active = !empty($filter_status) && in_array('Closed', $filter_status);
+        ?>
+        
+        <a href="<?php echo htmlspecialchars(buildFilterUrl(array_merge($base_params, ['status' => 'To Do']))); ?>" 
+           class="stat-badge <?php echo $is_todo_active ? 'active' : ''; ?>">
+            <span class="stat-dot pending"></span>
+            <span>To Do</span>
+            <span><?php echo $todo_count; ?></span>
+        </a>
+        
+        <a href="<?php echo htmlspecialchars(buildFilterUrl(array_merge($base_params, ['status' => 'In Progress']))); ?>" 
+           class="stat-badge <?php echo $is_inprogress_active ? 'active' : ''; ?>">
+            <span class="stat-dot active"></span>
+            <span>In Progress</span>
+            <span><?php echo $inprogress_count; ?></span>
+        </a>
+        
+        <a href="<?php echo htmlspecialchars(buildFilterUrl(array_merge($base_params, ['status' => 'Closed']))); ?>" 
+           class="stat-badge <?php echo $is_closed_active ? 'active' : ''; ?>">
+            <span class="stat-dot closed"></span>
+            <span>Closed</span>
+            <span><?php echo $closed_count; ?></span>
+        </a>
+    </div>
 
-    <!-- Search -->
-    <div class="mb-6">
-        <div class="flex-1 max-w-md relative" style="position: relative;">
+    <!-- Search and Filter Bar -->
+    <form method="GET" action="tasks" class="tasks-filters-bar" id="tasksFilterForm">
+        <div class="search-input-wrapper">
             <input type="text" name="search" id="searchInput" 
-                   placeholder="Search by Task ID (e.g., 12/25, CAR-1) or Title..." 
+                   placeholder="Search tasks..." 
                    value="<?php echo htmlspecialchars($search); ?>"
-                   class="w-full px-4 py-2.5 pl-10 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500 outline-none transition-all"
+                   class="search-input"
                    autocomplete="off">
-            <i class="fas fa-search absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400"></i>
+            <i class="fas fa-search search-icon"></i>
             <?php if (!empty($search)): ?>
-                <button type="button" id="clearSearchBtn" class="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors" title="Clear Search">
+                <button type="button" id="clearSearchBtn" 
+                        onclick="document.getElementById('searchInput').value=''; document.getElementById('tasksFilterForm').submit();"
+                        style="position: absolute; right: 12px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--text-muted); cursor: pointer; padding: 4px;">
                     <i class="fas fa-times"></i>
                 </button>
             <?php endif; ?>
             <!-- Search Suggestions Dropdown -->
-            <div id="searchSuggestions" class="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto hidden" style="top: 100%;">
+            <div id="searchSuggestions" class="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto hidden" style="top: 100%; left: 0;">
                 <div id="suggestionsList" class="py-1"></div>
+            </div>
+        </div>
+        
+        <?php 
+        // Prepare options for custom multiselects (exclude '0' from actual values)
+        $project_options = [];
+        foreach ($projects as $proj) {
+            $project_options[$proj['id']] = $proj['name'];
+        }
+        
+        $status_options = [
+            'To Do' => 'To Do',
+            'In Progress' => 'In Progress',
+            'Done' => 'Done'
+        ];
+        
+        $priority_options = [
+            'High' => 'High',
+            'Medium' => 'Medium',
+            'Low' => 'Low'
+        ];
+        ?>
+        
+        <div style="position: relative; min-width: 140px;">
+            <?php echo renderCustomMultiselect('project_id', $project_options, $filter_project, true); ?>
+        </div>
+        <div style="position: relative; min-width: 140px;">
+            <?php echo renderCustomMultiselect('status', $status_options, $filter_status, false); ?>
+        </div>
+        <div style="position: relative; min-width: 140px;">
+            <?php echo renderCustomMultiselect('priority', $priority_options, $filter_priority, false); ?>
+        </div>
+        
+        <!-- Preserve assignee filter if exists -->
+        <?php if (!empty($filter_assignee)): ?>
+            <?php foreach ($filter_assignee as $assignee_id): ?>
+                <input type="hidden" name="assignee_id[]" value="<?php echo $assignee_id; ?>">
+            <?php endforeach; ?>
+        <?php endif; ?>
+    </form>
+    
+
+    <!-- Tasks Table -->
+    <div class="tasks-table-container">
+        <table class="tasks-table">
+            <thead>
+                <tr>
+                    <th style="text-align: center; width: 40px;">
+                        <input type="checkbox" class="task-checkbox" id="selectAllTasks" title="Select All">
+                    </th>
+                    <th>Task</th>
+                    <th>Project</th>
+                    <th style="text-align: center;">Status</th>
+                    <th style="text-align: center;">Priority</th>
+                    <th style="text-align: center;">Due Date</th>
+                    <th style="text-align: center;">Assignee</th>
+                </tr>
+            </thead>
+            <tbody id="tasksTableBody">
+                <?php 
+                // Debug: Check if tasks array exists and has data
+                if (!isset($tasks) || empty($tasks)): 
+                ?>
+                    <tr>
+                        <td colspan="7" style="text-align: center; padding: 48px 16px; color: var(--text-muted);">
+                            <i class="fas fa-tasks" style="font-size: 48px; opacity: 0.3; margin-bottom: 12px; display: block;"></i>
+                            <p style="margin: 0; font-size: 14px;">No tasks found</p>
+                            <?php if (!empty($filter_project)): ?>
+                                <p style="margin: 8px 0 0 0; font-size: 12px; color: var(--text-secondary);">
+                                    Filtered by project<?php echo count($filter_project) > 1 ? 's' : ''; ?>
+                                </p>
+                            <?php endif; ?>
+                        </td>
+                    </tr>
+                <?php else: ?>
+                    <?php foreach ($tasks as $task): ?>
+                        <?php 
+                        // Status badge class
+                        $task_status = normalizeStatusForDisplay($task['status'] ?? 'To Do');
+                        $status_lower = strtolower(str_replace(' ', '-', $task_status));
+                        $status_class = 'table-status-pending';
+                        if (strpos($status_lower, 'to-do') !== false || strpos($status_lower, 'todo') !== false) {
+                            $status_class = 'table-status-pending';
+                        } elseif (strpos($status_lower, 'in-progress') !== false || strpos($status_lower, 'inprogress') !== false) {
+                            $status_class = 'table-status-active';
+                        } elseif (strpos($status_lower, 'closed') !== false) {
+                            $status_class = 'table-status-closed';
+                        }
+                        
+                        // Priority badge class
+                        $priority_lower = strtolower($task['priority'] ?? '');
+                        $priority_class = 'priority-low';
+                        if ($priority_lower == 'high') {
+                            $priority_class = 'priority-high';
+                        } elseif ($priority_lower == 'medium') {
+                            $priority_class = 'priority-medium';
+                        }
+                        
+                        // Due date formatting
+                        $due_date_display = '—';
+                        if (!empty($task['due_date'])) {
+                            $due_date_display = date('d-m-Y', strtotime($task['due_date']));
+                        }
+                        
+                        // Assignee initials
+                        $assignee_initials = '';
+                        if (!empty($task['assignee_name'])) {
+                            $assignee_initials = getInitials($task['assignee_name']);
+                        }
+                        ?>
+                        <tr data-task-id="<?php echo $task['id']; ?>" style="cursor: pointer; transition: background-color 0.2s;" class="task-row">
+                            <td style="text-align: center;" onclick="event.stopPropagation();">
+                                <input type="checkbox" class="task-checkbox" onclick="event.stopPropagation();">
+                            </td>
+                            <td>
+                                <div class="task-name-cell">
+                                    <span class="task-name-text"><?php echo htmlspecialchars($task['title']); ?></span>
+                                </div>
+                            </td>
+                            <td>
+                                <span class="task-project"><?php echo htmlspecialchars($task['project_name'] ?? '—'); ?></span>
+                            </td>
+                            <td style="text-align: center;" onclick="event.stopPropagation(); event.preventDefault();">
+                                <form method="POST" action="" style="display: inline-block; margin: 0;" id="statusForm_<?php echo $task['id']; ?>" onclick="event.stopPropagation();">
+                                    <input type="hidden" name="task_id" value="<?php echo $task['id']; ?>">
+                                    <input type="hidden" name="update_status_quick" value="1">
+                                    <select name="status" 
+                                            onchange="updateTaskStatusQuick(<?php echo $task['id']; ?>, this.value); event.stopPropagation();" 
+                                            onclick="event.stopPropagation();"
+                                            style="padding: 4px 24px 4px 8px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 12px; font-weight: 500; cursor: pointer; background: <?php 
+                                                if ($status_class == 'table-status-pending') echo 'var(--chart-yellow)';
+                                                elseif ($status_class == 'table-status-active') echo 'var(--chart-green)';
+                                                elseif ($status_class == 'table-status-closed') echo 'var(--closed-bg)';
+                                                else echo 'var(--card-bg)';
+                                            ?>; color: <?php 
+                                                if ($status_class == 'table-status-pending') echo 'var(--text-primary)';
+                                                elseif ($status_class == 'table-status-active') echo 'white';
+                                                elseif ($status_class == 'table-status-closed') echo 'var(--closed-text)';
+                                                else echo 'var(--text-primary)';
+                                            ?>; appearance: none; background-image: url('data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 12 12\'%3E%3Cpath fill=\'%236B7280\' d=\'M6 9L1 4h10z\'/%3E%3C/svg%3E'); background-repeat: no-repeat; background-position: right 8px center; min-width: 110px;">
+                                        <option value="To Do" <?php echo ($task_status == 'To Do') ? 'selected' : ''; ?>>To Do</option>
+                                        <option value="In Progress" <?php echo ($task_status == 'In Progress') ? 'selected' : ''; ?>>In Progress</option>
+                                        <option value="Closed" <?php echo ($task_status == 'Closed' || normalizeStatusForDisplay($task['status']) == 'Closed') ? 'selected' : ''; ?>>Closed</option>
+                                    </select>
+                                </form>
+                            </td>
+                            <td style="text-align: center;">
+                                <span class="table-priority-badge <?php echo $priority_class; ?>">
+                                    <?php echo htmlspecialchars($task['priority'] ?? 'Low'); ?>
+                                </span>
+                            </td>
+                            <td style="text-align: center;">
+                                <span class="due-date-text"><?php echo $due_date_display; ?></span>
+                            </td>
+                            <td style="text-align: center;">
+                                <?php if ($assignee_initials): ?>
+                                    <div class="assignee-avatar" title="<?php echo htmlspecialchars($task['assignee_name']); ?>">
+                                        <?php echo htmlspecialchars($assignee_initials); ?>
+                                    </div>
+                                <?php else: ?>
+                                    <span style="color: var(--text-muted); font-size: 12px;">—</span>
+                                <?php endif; ?>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Pagination -->
+    <div class="pagination-container">
+        <div class="pagination-info">
+            Showing <?php echo min(($current_page - 1) * $items_per_page + 1, $total_items); ?> to <?php echo min($current_page * $items_per_page, $total_items); ?> of <?php echo $total_items; ?> tasks
+        </div>
+        <div class="pagination-controls">
+            <?php 
+            $pagination_html = generatePagination($current_page, $total_pages, $_GET);
+            if ($pagination_html): 
+                echo $pagination_html;
+            endif; 
+            ?>
         </div>
     </div>
 </div>
 
-    <!-- Tasks Table -->
-    <div class="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-        <div class="overflow-x-auto">
-            <table class="min-w-full divide-y divide-gray-200">
-                <thead style="background-color: #1e293b;">
-                    <tr>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-white uppercase tracking-wider">Task ID</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-white uppercase tracking-wider">Title</th>
-                        <th class="px-6 py-3 text-center text-xs font-medium text-white uppercase tracking-wider" style="width: 120px;">Priority</th>
-                        <th class="px-6 py-3 text-center text-xs font-medium text-white uppercase tracking-wider" style="width: 140px;">Status</th>
-                        <th class="px-6 py-3 text-center text-xs font-medium text-white uppercase tracking-wider" style="width: 100px;">Assignee</th>
-                        <th class="px-6 py-3 text-center text-xs font-medium text-white uppercase tracking-wider" style="width: 150px;">Due Date</th>
-            </tr>
-        </thead>
-                <tbody id="tasksTableBody" class="bg-white divide-y divide-gray-200">
-            <?php if (empty($tasks)): ?>
-                <tr>
-                            <td colspan="6" class="px-6 py-12 text-center text-gray-500">
-                                <i class="fas fa-tasks text-4xl text-gray-300 mb-3 block"></i>
-                                <p>No tasks found</p>
-                            </td>
-                </tr>
-            <?php else: ?>
-                <?php foreach ($tasks as $task): ?>
-                            <?php
-                            // Get icon for task type
-                            $type_icon = 'fa-tasks';
-                            $type_color = '#14b8a6';
-                            if ($task['type'] == 'Bug') {
-                                $type_icon = 'fa-bug';
-                                $type_color = '#e74c3c';
-                            } elseif ($task['type'] == 'Improvement') {
-                                $type_icon = 'fa-lightbulb';
-                                $type_color = '#f39c12';
-                            }
-                            ?>
-                            <tr class="hover:bg-blue-50 transition-colors cursor-pointer" style="transition: background-color 0.2s ease;">
-                                <td class="px-6 py-4 whitespace-nowrap" style="cursor: pointer;" onclick="window.location.href='task_view?id=<?php echo $task['id']; ?>'">
-                                    <div class="flex items-center gap-2">
-                                        <span class="font-semibold text-gray-900"><?php echo htmlspecialchars($task['task_id']); ?></span>
-                                        <i class="fas <?php echo $type_icon; ?> text-sm" style="color: <?php echo $type_color; ?>;" title="<?php echo htmlspecialchars($task['type']); ?>"></i>
-                                    </div>
-                        </td>
-                                <td class="px-6 py-4" style="cursor: pointer;" onclick="window.location.href='task_view?id=<?php echo $task['id']; ?>'">
-                                    <div class="text-sm text-gray-900 font-medium"><?php echo htmlspecialchars($task['title']); ?></div>
-                        </td>
-                            <?php 
-                                        // Priority badge
-                                        $priority_lower = strtolower($task['priority']);
-                                        $priority_colors = [
-                                            'high' => ['bg' => 'bg-red-100', 'text' => 'text-red-800', 'icon' => 'fa-exclamation-circle', 'icon_color' => 'text-red-600'],
-                                            'medium' => ['bg' => 'bg-yellow-100', 'text' => 'text-yellow-800', 'icon' => 'fa-exclamation-triangle', 'icon_color' => 'text-yellow-600'],
-                                            'low' => ['bg' => 'bg-green-100', 'text' => 'text-green-800', 'icon' => 'fa-check-circle', 'icon_color' => 'text-green-600']
-                                        ];
-                                        $priority_style = $priority_colors[$priority_lower] ?? $priority_colors['low'];
-                                        
-                                        // Status badge
-                                        $status_lower = strtolower(str_replace(' ', '-', $task['status']));
-                                        $status_colors = [
-                                            'done' => ['bg' => 'bg-green-100', 'text' => 'text-green-800', 'icon' => 'fa-check-circle', 'icon_color' => 'text-green-600'],
-                                            'in-progress' => ['bg' => 'bg-blue-100', 'text' => 'text-blue-800', 'icon' => 'fa-spinner', 'icon_color' => 'text-blue-600'],
-                                            'to-do' => ['bg' => 'bg-gray-100', 'text' => 'text-gray-800', 'icon' => 'fa-clock', 'icon_color' => 'text-gray-600']
-                                        ];
-                                        $status_style = $status_colors[$status_lower] ?? $status_colors['to-do'];
-                                        
-                                        // Assignee badge
-                                        $assignee_name = $task['assignee_name'] ?? null;
-                                        $assignee_colors = [
-                                            'assigned' => ['bg' => 'bg-blue-100', 'text' => 'text-blue-800', 'icon' => 'fa-user', 'icon_color' => 'text-blue-600'],
-                                            'unassigned' => ['bg' => 'bg-gray-100', 'text' => 'text-gray-800', 'icon' => 'fa-user-slash', 'icon_color' => 'text-gray-600']
-                                        ];
-                                        $assignee_style = $assignee_name ? $assignee_colors['assigned'] : $assignee_colors['unassigned'];
-                                        
-                                        // Due date badge
-                                        $due_date = $task['due_date'];
-                                        $due_date_colors = [
-                                            'overdue' => ['bg' => 'bg-red-100', 'text' => 'text-red-800', 'icon' => 'fa-exclamation-triangle', 'icon_color' => 'text-red-600'],
-                                            'upcoming' => ['bg' => 'bg-yellow-100', 'text' => 'text-yellow-800', 'icon' => 'fa-calendar-alt', 'icon_color' => 'text-yellow-600'],
-                                            'normal' => ['bg' => 'bg-gray-100', 'text' => 'text-gray-800', 'icon' => 'fa-calendar', 'icon_color' => 'text-gray-600'],
-                                            'nodate' => ['bg' => 'bg-gray-50', 'text' => 'text-gray-500', 'icon' => 'fa-calendar-times', 'icon_color' => 'text-gray-400']
-                                        ];
-                                        
-                                        if (!$due_date) {
-                                            $due_date_style = $due_date_colors['nodate'];
-                                            $due_date_display = 'No due date';
-                                        } elseif ($task['status'] == 'Done') {
-                                            $due_date_style = $due_date_colors['normal'];
-                                            $due_date_display = formatDate($due_date);
-                                        } elseif (strtotime($due_date) < time()) {
-                                            $due_date_style = $due_date_colors['overdue'];
-                                            $due_date_display = formatDate($due_date);
-                                        } elseif (strtotime($due_date) <= strtotime('+3 days')) {
-                                            $due_date_style = $due_date_colors['upcoming'];
-                                            $due_date_display = formatDate($due_date);
-                            } else {
-                                            $due_date_style = $due_date_colors['normal'];
-                                            $due_date_display = formatDate($due_date);
-                            }
-                            ?>
-                                <td class="px-6 py-4 whitespace-nowrap text-center">
-                                    <span class="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full <?php echo $priority_style['bg'] . ' ' . $priority_style['text']; ?>">
-                                        <i class="fas <?php echo $priority_style['icon']; ?> <?php echo $priority_style['icon_color']; ?> text-xs"></i>
-                                        <?php echo htmlspecialchars($task['priority']); ?>
-                                    </span>
-                        </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-center">
-                                    <span class="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full <?php echo $status_style['bg'] . ' ' . $status_style['text']; ?>">
-                                        <i class="fas <?php echo $status_style['icon']; ?> <?php echo $status_style['icon_color']; ?> text-xs"></i>
-                                        <?php echo htmlspecialchars($task['status']); ?>
-                                    </span>
-                        </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-center">
-                                    <?php if ($assignee_name): ?>
-                                        <?php $assignee_initials = getInitials($assignee_name); ?>
-                                        <span class="inline-flex items-center justify-center w-8 h-8 rounded-full text-xs font-semibold bg-indigo-100 text-indigo-700 border border-indigo-300" 
-                                              title="<?php echo htmlspecialchars($assignee_name); ?>"
-                                              style="min-width: 32px; min-height: 32px;">
-                                            <?php echo htmlspecialchars($assignee_initials); ?>
-                                        </span>
-                                    <?php else: ?>
-                                        <span class="inline-flex items-center justify-center w-8 h-8 rounded-full text-xs font-semibold bg-gray-100 text-gray-600 border border-gray-300" 
-                                              title="Unassigned"
-                                              style="min-width: 32px; min-height: 32px;">
-                                            <i class="fas fa-user-slash" style="font-size: 10px;"></i>
-                                        </span>
-                            <?php endif; ?>
-                        </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-center">
-                                    <span class="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full <?php echo $due_date_style['bg'] . ' ' . $due_date_style['text']; ?>">
-                                        <i class="fas <?php echo $due_date_style['icon']; ?> <?php echo $due_date_style['icon_color']; ?> text-xs"></i>
-                                        <?php echo htmlspecialchars($due_date_display); ?>
-                                    </span>
-                        </td>
-                    </tr>
-                <?php endforeach; ?>
-            <?php endif; ?>
-        </tbody>
-    </table>
+<!-- Add Task Modal -->
+<div id="addTaskModal" class="modal" style="display: none;">
+    <div class="modal-content" style="max-width: 600px;">
+        <div class="modal-header">
+            <h2 style="margin: 0; font-size: 20px; font-weight: 600; color: var(--text-primary);">Add New Task</h2>
+            <button class="close" onclick="closeAddTaskModal()" style="background: none; border: none; font-size: 24px; cursor: pointer; color: var(--text-muted);">&times;</button>
         </div>
+        <form method="POST" action="tasks" id="addTaskForm">
+            <input type="hidden" name="create_task" value="1">
+            <div class="modal-body" style="padding: 24px;">
+                <div style="margin-bottom: 20px;">
+                    <label style="display: block; margin-bottom: 8px; font-weight: 500; color: var(--text-primary); font-size: 14px;">Name <span style="color: var(--chart-red);">*</span></label>
+                    <input type="text" name="title" required 
+                           style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px;"
+                           placeholder="Enter task name">
+                </div>
+                
+                <div style="margin-bottom: 20px;">
+                    <label style="display: block; margin-bottom: 8px; font-weight: 500; color: var(--text-primary); font-size: 14px;">Description</label>
+                    <textarea name="description" rows="4" 
+                              style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; resize: vertical;"
+                              placeholder="Enter task description"></textarea>
+                </div>
+                
+                <div style="margin-bottom: 20px;">
+                    <label style="display: block; margin-bottom: 8px; font-weight: 500; color: var(--text-primary); font-size: 14px;">Type</label>
+                    <select name="type" required 
+                            style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; background: white;">
+                        <option value="Task">Task</option>
+                        <option value="Bug">Bug</option>
+                        <option value="Improvement">Improvement</option>
+                    </select>
+                </div>
+                
+                <div style="margin-bottom: 20px;">
+                    <label style="display: block; margin-bottom: 8px; font-weight: 500; color: var(--text-primary); font-size: 14px;">Project</label>
+                    <select name="project_id" required 
+                            style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; background: white;">
+                        <option value="">Select Project</option>
+                        <?php foreach ($projects as $proj): ?>
+                            <option value="<?php echo $proj['id']; ?>" <?php echo (!empty($filter_project) && in_array($proj['id'], $filter_project)) ? 'selected' : ''; ?>>
+                                <?php echo htmlspecialchars($proj['name']); ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                
+                <input type="hidden" name="status" value="To Do">
+                <input type="hidden" name="priority" value="Low">
+            </div>
+            <div class="modal-footer" style="padding: 16px 24px; border-top: 1px solid var(--border-color); display: flex; justify-content: flex-end; gap: 12px;">
+                <button type="button" onclick="closeAddTaskModal()" 
+                        style="padding: 10px 20px; border: 1px solid var(--border-color); background: white; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500; color: var(--text-primary);">
+                    Cancel
+                </button>
+                <button type="submit" 
+                        style="padding: 10px 20px; border: none; background: var(--blue); color: white; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500;">
+                    Create Task
+                </button>
+            </div>
+        </form>
+    </div>
 </div>
 
-<!-- Pagination -->
-<?php 
-$pagination_html = generatePagination($current_page, $total_pages, $_GET);
-if ($pagination_html): 
-?>
-        <div id="paginationContainer" class="mt-6 flex justify-center items-center gap-3 flex-wrap">
-        <?php echo $pagination_html; ?>
-            <span class="text-gray-600 text-sm ml-4">
-            Showing <?php echo count($tasks); ?> of <?php echo $total_items; ?> tasks
-        </span>
-        </div>
-            <?php endif; ?>
-            </div>
-            
-<!-- Task form is now in task_form.php - Modal removed and commented out -->
-<!--
-<div id="taskModal" class="modal" style="display: none;">
-    ... old modal code removed ...
-            </div>
--->
-<!-- Modal scripts removed - using task_form.php instead -->
-
     <script>
+// Add Task Modal Functions
+function openAddTaskModal() {
+    const modal = document.getElementById('addTaskModal');
+    if (modal) {
+        modal.style.display = 'block';
+        document.body.style.overflow = 'hidden'; // Prevent background scrolling
+    } else {
+        console.error('Add Task Modal not found');
+    }
+}
+
+function closeAddTaskModal() {
+    const modal = document.getElementById('addTaskModal');
+    const form = document.getElementById('addTaskForm');
+    if (modal) {
+        modal.style.display = 'none';
+        document.body.style.overflow = ''; // Restore scrolling
+    }
+    if (form) {
+        form.reset();
+    }
+}
+
+// Close modal when clicking outside
+document.addEventListener('click', function(event) {
+    const modal = document.getElementById('addTaskModal');
+    if (modal && event.target == modal) {
+        closeAddTaskModal();
+    }
+});
+
+// Close modal with Escape key
+document.addEventListener('keydown', function(event) {
+    if (event.key === 'Escape') {
+        const modal = document.getElementById('addTaskModal');
+        if (modal && modal.style.display === 'block') {
+            closeAddTaskModal();
+        }
+    }
+});
+
 // Real-time search with suggestions
 let searchTimeout;
 let currentSuggestions = [];
@@ -1825,7 +2251,76 @@ document.addEventListener('click', function(e) {
     if (searchInput && searchSuggestions && !searchInput.contains(e.target) && !searchSuggestions.contains(e.target)) {
         hideSuggestions();
     }
+});
+
+// Handle row click - navigate to task view unless clicking on interactive elements
+document.addEventListener('DOMContentLoaded', function() {
+    // Add click handlers to all task rows
+    const taskRows = document.querySelectorAll('.task-row');
+    taskRows.forEach(function(row) {
+        row.addEventListener('click', function(event) {
+            // Don't navigate if clicking on checkbox, select, button, or form elements
+            const target = event.target;
+            const tagName = target.tagName;
+            
+            // Check if clicking directly on interactive elements
+            if (tagName === 'INPUT' || 
+                tagName === 'SELECT' || 
+                tagName === 'BUTTON' ||
+                tagName === 'FORM' ||
+                tagName === 'A') {
+                event.stopPropagation();
+                return false;
+            }
+            
+            // Check if clicking inside a form, select, or checkbox
+            const form = target.closest('form');
+            const select = target.closest('select');
+            const checkbox = target.closest('input[type="checkbox"]');
+            const button = target.closest('button');
+            
+            if (form || select || checkbox || button) {
+                event.stopPropagation();
+                return false;
+            }
+            
+            // Get task ID from data attribute
+            const taskId = row.getAttribute('data-task-id');
+            if (taskId) {
+                // Navigate to task view
+                window.location.href = 'task_view?id=' + taskId;
+            }
         });
+    });
+});
+
+// Quick status update function
+function updateTaskStatusQuick(taskId, newStatus) {
+    const form = document.getElementById('statusForm_' + taskId);
+    if (form) {
+        // Create a FormData object
+        const formData = new FormData(form);
+        
+        // Submit via fetch to avoid page reload
+        fetch('', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => {
+            if (response.ok) {
+                // Reload the page to show updated status
+                window.location.reload();
+            } else {
+                alert('Error updating status');
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('Error updating status');
+        });
+    }
+    return false; // Prevent default form submission
+}
     </script>
 
 <?php include 'includes/footer.php'; ?>

@@ -465,9 +465,9 @@ include 'includes/header.php';
                                         <input type="hidden" name="task_id" value="<?php echo $task['id']; ?>">
                                         <select name="status" onchange="this.form.submit()" 
                                                 style="background: <?php echo $status_style['bg'] == 'bg-green-100' ? '#d1fae5' : ($status_style['bg'] == 'bg-blue-100' ? '#dbeafe' : '#f3f4f6'); ?>; color: <?php echo $status_style['text'] == 'text-green-800' ? '#065f46' : ($status_style['text'] == 'text-blue-800' ? '#1e40af' : '#374151'); ?>; padding: 4px 12px; font-size: 12px; border: none; border-radius: 9999px; cursor: pointer; font-weight: 500; outline: none;">
-                                            <option value="To Do" <?php echo $task['status'] == 'To Do' ? 'selected' : ''; ?>>To Do</option>
+                                            <option value="To Do" <?php echo ($task['status'] == 'To Do' || $task['status'] == '') ? 'selected' : ''; ?>>To Do</option>
                                             <option value="In Progress" <?php echo $task['status'] == 'In Progress' ? 'selected' : ''; ?>>In Progress</option>
-                                            <option value="Done" <?php echo $task['status'] == 'Done' ? 'selected' : ''; ?>>Done</option>
+                                            <option value="Closed" <?php echo ($task['status'] == 'Closed' || $task['status'] == 'Done') ? 'selected' : ''; ?>>Closed</option>
                                         </select>
                                         <input type="hidden" name="update_status" value="1">
                                     </form>

@@ -180,7 +180,14 @@ $(document).ready(function() {
             // Handle checkbox change
             $options.find('input[type="checkbox"]').on('change', function() {
                 updateDisplay();
-                // Removed auto-filter - user will click Filter button instead
+                // Auto-submit form after a short delay to allow multiple selections
+                var $form = $(this).closest('form');
+                if ($form.length) {
+                    clearTimeout(window.filterSubmitTimeout);
+                    window.filterSubmitTimeout = setTimeout(function() {
+                        $form.submit();
+                    }, 500);
+                }
             });
             
             // Update display text
@@ -198,8 +205,8 @@ $(document).ready(function() {
                     $count.hide();
                 } else {
                     $placeholder.hide();
-                    var countText = selected.length === 1 ? '1 selected' : selected.length + ' selected';
-                    $count.text(countText).show();
+                    var displayText = selected.length === 1 ? selected[0] : (selected.length <= 2 ? selected.join(', ') : selected.length + ' selected');
+                    $count.text(displayText).show();
                 }
             }
             

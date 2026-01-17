@@ -4,7 +4,8 @@ require_once 'config/email.php';
 
 $error = '';
 $success = '';
-$token = $_GET['token'] ?? '';
+$token = $_POST['token'] ?? $_GET['token'] ?? '';
+$field_errors = []; // Track which fields have errors
 
 if (empty($token)) {
     $error = 'Invalid or missing token';
@@ -32,10 +33,18 @@ if (empty($token)) {
             
             if (empty($password) || empty($confirm_password) || empty($username) || empty($full_name)) {
                 $error = 'Please fill in all fields';
+                if (empty($full_name)) $field_errors['full_name'] = true;
+                if (empty($username)) $field_errors['username'] = true;
+                if (empty($password)) $field_errors['password'] = true;
+                if (empty($confirm_password)) $field_errors['confirm_password'] = true;
             } elseif ($password !== $confirm_password) {
                 $error = 'Passwords do not match';
+                $field_errors['password'] = true;
+                $field_errors['confirm_password'] = true;
             } elseif (strlen($password) < 6) {
                 $error = 'Password must be at least 6 characters long';
+                $field_errors['password'] = true;
+                $field_errors['confirm_password'] = true;
             } else {
                 // Check if username already exists
                 $stmt = $conn->prepare("SELECT id FROM users WHERE username = ?");
@@ -45,6 +54,7 @@ if (empty($token)) {
                 
                 if ($result->num_rows > 0) {
                     $error = 'Username already exists. Please choose a different username.';
+                    $field_errors['username'] = true;
                 } else {
                     // Get Admin role ID
                     $stmt = $conn->prepare("SELECT id FROM roles WHERE name = 'Admin'");
@@ -87,6 +97,18 @@ if (empty($token)) {
     <title>Set Password - <?php echo SITE_NAME; ?></title>
     <link rel="stylesheet" href="assets/css/style.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        .form-group input.error-field {
+            border: 2px solid #ef4444 !important;
+            border-color: #ef4444 !important;
+            background-color: #fef2f2;
+        }
+        .form-group input.error-field:focus {
+            border-color: #ef4444 !important;
+            box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.1) !important;
+            outline: none;
+        }
+    </style>
 </head>
 <body class="login-page">
     <div class="login-container">
@@ -107,34 +129,40 @@ if (empty($token)) {
                 <div style="text-align: center; margin-top: 20px;">
                     <a href="index" class="btn btn-primary">Go to Login</a>
                 </div>
-            <?php elseif (!$error && isset($token_data)): ?>
+            <?php elseif (isset($token_data)): ?>
                 <form method="POST" action="">
+                    <input type="hidden" name="token" value="<?php echo htmlspecialchars($token); ?>">
+                    
                     <div class="form-group">
                         <label for="full_name">Full Name *</label>
                         <input type="text" id="full_name" name="full_name" required autofocus 
                                value="<?php echo htmlspecialchars($_POST['full_name'] ?? ''); ?>"
-                               placeholder="Enter your full name">
+                               placeholder="Enter your full name"
+                               class="<?php echo isset($field_errors['full_name']) ? 'error-field' : ''; ?>">
                     </div>
                     
                     <div class="form-group">
                         <label for="username">Username *</label>
                         <input type="text" id="username" name="username" required 
                                value="<?php echo htmlspecialchars($_POST['username'] ?? ''); ?>"
-                               placeholder="Choose a username">
+                               placeholder="Choose a username"
+                               class="<?php echo isset($field_errors['username']) ? 'error-field' : ''; ?>">
                         <small style="color: #666;">This will be your login username</small>
                     </div>
                     
                     <div class="form-group">
                         <label for="password">Password *</label>
                         <input type="password" id="password" name="password" required minlength="6"
-                               placeholder="Enter password">
+                               placeholder="Enter password" autocomplete="new-password"
+                               class="<?php echo isset($field_errors['password']) ? 'error-field' : ''; ?>">
                         <small style="color: #666;">Minimum 6 characters</small>
                     </div>
                     
                     <div class="form-group">
                         <label for="confirm_password">Confirm Password *</label>
                         <input type="password" id="confirm_password" name="confirm_password" required minlength="6"
-                               placeholder="Confirm your password">
+                               placeholder="Confirm your password" autocomplete="new-password"
+                               class="<?php echo isset($field_errors['confirm_password']) ? 'error-field' : ''; ?>">
                     </div>
                     
                     <button type="submit" class="btn btn-primary btn-block" title="Set Password">

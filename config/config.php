@@ -91,6 +91,22 @@ function requireProjectManager() {
     }
 }
 
+// Helper function to normalize status for display (maps 'Done' to 'Closed' for backward compatibility)
+function normalizeStatusForDisplay($status) {
+    if ($status == 'Done') {
+        return 'Closed';
+    }
+    return $status;
+}
+
+// Helper function to normalize status for database (maps 'Closed' to 'Done' if database still uses 'Done')
+function normalizeStatusForDatabase($status) {
+    // For now, we'll use 'Closed' directly. If database ENUM still has 'Done', 
+    // uncomment the line below after running the migration script
+    // if ($status == 'Closed') return 'Done';
+    return $status;
+}
+
 function formatDate($date) {
     if (empty($date)) return '-';
     return date('M d, Y', strtotime($date));

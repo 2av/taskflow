@@ -91,11 +91,12 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['create_task'])) {
         }
         
         if (empty($error)) {
-            // Generate task ID
-            $project_code = $conn->query("SELECT name FROM projects WHERE id = $project_id")->fetch_assoc()['name'];
-            $project_code = strtoupper(substr(preg_replace('/[^A-Za-z0-9]/', '', $project_code), 0, 3));
+            // Generate task ID - include project_id to ensure uniqueness across organizations
+            $project_info = $conn->query("SELECT name, organization_id FROM projects WHERE id = $project_id")->fetch_assoc();
+            $project_code = strtoupper(substr(preg_replace('/[^A-Za-z0-9]/', '', $project_info['name']), 0, 3));
             $task_num = $conn->query("SELECT COUNT(*) as count FROM tasks WHERE project_id = $project_id")->fetch_assoc()['count'] + 1;
-            $task_id_str = $project_code . '-' . $task_num;
+            // Include project_id in task_id to ensure uniqueness: PROJ-PROJECTID-TASKNUM
+            $task_id_str = $project_code . '-' . $project_id . '-' . $task_num;
             
             $stmt = $conn->prepare("INSERT INTO tasks (task_id, project_id, title, description, type, priority, assignee_id, due_date, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
             $stmt->bind_param("sissssssi", $task_id_str, $project_id, $title, $description, $type, $priority, $assignee_id, $due_date, $created_by);
@@ -445,9 +446,9 @@ include 'includes/header.php';
                         Status <span class="required">*</span>
                     </label>
                     <select id="status" name="status" required>
-                        <option value="To Do" <?php echo $edit_task['status'] == 'To Do' ? 'selected' : ''; ?>>To Do</option>
+                        <option value="To Do" <?php echo ($edit_task['status'] == 'To Do' || $edit_task['status'] == '') ? 'selected' : ''; ?>>To Do</option>
                         <option value="In Progress" <?php echo $edit_task['status'] == 'In Progress' ? 'selected' : ''; ?>>In Progress</option>
-                        <option value="Done" <?php echo $edit_task['status'] == 'Done' ? 'selected' : ''; ?>>Done</option>
+                        <option value="Closed" <?php echo ($edit_task['status'] == 'Closed' || $edit_task['status'] == 'Done') ? 'selected' : ''; ?>>Closed</option>
                     </select>
                 </div>
             <?php endif; ?>
