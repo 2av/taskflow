@@ -10,28 +10,99 @@ if (isLoggedIn()) {
 
 $error = '';
 $success = '';
+// Get token from POST, GET, or URL path
 $token = $_POST['token'] ?? $_GET['token'] ?? '';
+// Also try to extract from URL if token is in path (for router compatibility)
+if (empty($token) && isset($_SERVER['REQUEST_URI'])) {
+    $uri = $_SERVER['REQUEST_URI'];
+    if (preg_match('/token[=:]([a-f0-9]{64})/i', $uri, $matches)) {
+        $token = $matches[1];
+    }
+}
 $field_errors = [];
 
 if (empty($token)) {
-    $error = 'Invalid or missing reset token';
+    $error = 'Invalid or missing reset token. Please check the link in your email.';
 } else {
     $conn = getDBConnection();
     
+    // Ensure password_reset_tokens table exists
+    $conn->query("CREATE TABLE IF NOT EXISTS password_reset_tokens (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        email VARCHAR(255) NOT NULL,
+        token VARCHAR(64) NOT NULL,
+        expires_at DATETIME NOT NULL,
+        used TINYINT(1) DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_token (token),
+        INDEX idx_email (email),
+        INDEX idx_user_id (user_id),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )");
+    
     // Check token validity - try password_reset_tokens first (for active users)
-    $stmt = $conn->prepare("SELECT prt.*, u.email, u.full_name, u.status as user_status, o.name as org_name, o.id as org_id
-                           FROM password_reset_tokens prt 
-                           JOIN users u ON prt.user_id = u.id 
-                           LEFT JOIN organizations o ON u.organization_id = o.id
-                           WHERE prt.token = ? AND prt.used = 0 AND prt.expires_at > NOW()");
+    // First, check if token exists (without expiration check to diagnose issues)
+    $stmt = $conn->prepare("SELECT prt.* FROM password_reset_tokens prt 
+                           WHERE prt.token = ?");
     $stmt->bind_param("s", $token);
     $stmt->execute();
     $result = $stmt->get_result();
-    $token_data = $result->fetch_assoc();
-    $token_type = 'reset'; // Default to reset token
+    $token_row = $result->fetch_assoc();
+    
+    // Now validate the token
+    if ($token_row) {
+        // Check if token is used or expired - explicitly cast to int to avoid type issues
+        $is_used = ((int)$token_row['used'] == 1);
+        $is_expired = (strtotime($token_row['expires_at']) < time());
+        
+        if (!$is_used && !$is_expired) {
+            // Token is valid - proceed to get user info
+            $stmt = $conn->prepare("SELECT u.email, u.full_name, u.status as user_status, u.organization_id, o.name as org_name, o.id as org_id
+                                   FROM users u 
+                                   LEFT JOIN organizations o ON u.organization_id = o.id
+                                   WHERE u.id = ?");
+            $stmt->bind_param("i", $token_row['user_id']);
+            $stmt->execute();
+            $user_result = $stmt->get_result();
+            $user_data = $user_result->fetch_assoc();
+            
+            // Merge token and user data
+            if ($user_data) {
+                $token_data = array_merge($token_row, $user_data);
+                $token_type = 'reset';
+            } else {
+                // User doesn't exist, but token is valid - use email from token
+                $token_data = $token_row;
+                $token_data['email'] = $token_row['email'];
+                $token_data['user_id'] = $token_row['user_id'];
+                $token_type = 'reset';
+            }
+        } else {
+            // Token exists but is invalid (used or expired) - set to null for error handling
+            $token_data = null;
+        }
+    }
+    
+    if (!$token_row) {
+        $token_data = null;
+    }
     
     // If not found in reset tokens, check password_tokens (for inactive users/setup)
     if (!$token_data) {
+        // Ensure password_tokens table exists
+        $conn->query("CREATE TABLE IF NOT EXISTS password_tokens (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            email VARCHAR(255) NOT NULL,
+            organization_id INT NOT NULL,
+            token VARCHAR(64) NOT NULL,
+            expires_at DATETIME NOT NULL,
+            used TINYINT(1) DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_token (token),
+            INDEX idx_email (email)
+        )");
+        
         $stmt = $conn->prepare("SELECT pt.*, o.name as org_name, o.id as org_id, u.id as user_id, u.status as user_status, u.full_name, u.email
                                FROM password_tokens pt 
                                JOIN organizations o ON pt.organization_id = o.id
@@ -45,7 +116,63 @@ if (empty($token)) {
     }
     
     if (!$token_data) {
-        $error = 'Invalid or expired token. Please request a new password reset link.';
+        // More detailed error - check if token exists but is used or expired
+        $check_used = $conn->prepare("SELECT token, used, expires_at FROM password_reset_tokens WHERE token = ?");
+        $check_used->bind_param("s", $token);
+        $check_used->execute();
+        $used_result = $check_used->get_result();
+        $used_token = $used_result->fetch_assoc();
+        
+        if ($used_token) {
+            // Check the actual value - handle both string and integer types
+            $used_value = (int)$used_token['used'];
+            $is_expired = strtotime($used_token['expires_at']) < time();
+            
+            if ($used_value == 1) {
+                $error = 'This password reset link has already been used. If you need to reset your password again, please request a new password reset link from the login page.';
+            } elseif ($is_expired) {
+                $error = 'This password reset link has expired. Please request a new password reset link from the login page.';
+            } else {
+                // Token exists but query failed - might be user_id issue
+                // Try to get user info directly
+                $check_user = $conn->prepare("SELECT user_id FROM password_reset_tokens WHERE token = ?");
+                $check_user->bind_param("s", $token);
+                $check_user->execute();
+                $user_check_result = $check_user->get_result();
+                $user_check = $user_check_result->fetch_assoc();
+                
+                if ($user_check && $user_check['user_id']) {
+                    $error = 'Token found but user information could not be retrieved. Please request a new password reset link.';
+                } else {
+                    $error = 'Token found but validation failed. Please request a new password reset link.';
+                }
+            }
+        } else {
+            // Check password_tokens table too
+            $check_setup = $conn->prepare("SELECT token, used, expires_at FROM password_tokens WHERE token = ?");
+            $check_setup->bind_param("s", $token);
+            $check_setup->execute();
+            $setup_result = $check_setup->get_result();
+            $setup_token = $setup_result->fetch_assoc();
+            
+            if ($setup_token) {
+                if ($setup_token['used'] == 1) {
+                    $error = 'This password setup link has already been used. Please request a new password reset link.';
+                } elseif (strtotime($setup_token['expires_at']) < time()) {
+                    $error = 'This password setup link has expired. Please request a new password reset link.';
+                } else {
+                    $error = 'Token found but validation failed. Please request a new password reset link.';
+                }
+            } else {
+                // Check if token might be in a different format (URL encoded, truncated, etc.)
+                $token_length = strlen($token);
+                if ($token_length < 32) {
+                    $error = 'Invalid token format. The reset link may be corrupted. Please request a new password reset link.';
+                } else {
+                    $error = 'Invalid or expired token. Please request a new password reset link.';
+                }
+            }
+        }
     } else {
         // Handle password reset/setup
         if ($_SERVER['REQUEST_METHOD'] == 'POST') {
@@ -92,6 +219,8 @@ if (empty($token)) {
                     }
                 }
                 
+                $update_success = false;
+                
                 if ($user_id) {
                     // Update existing user
                     if ($require_full_name && !empty($full_name)) {
@@ -102,6 +231,13 @@ if (empty($token)) {
                         // Update password only
                         $stmt = $conn->prepare("UPDATE users SET password = ?, status = 'active' WHERE id = ?");
                         $stmt->bind_param("si", $hashed_password, $user_id);
+                    }
+                    
+                    // Execute the UPDATE statement
+                    $update_success = $stmt->execute();
+                    
+                    if (!$update_success) {
+                        $error = 'Error updating password: ' . $conn->error;
                     }
                 } else {
                     // User doesn't exist - create new user (shouldn't happen, but safety)
@@ -115,18 +251,22 @@ if (empty($token)) {
                         $temp_full_name = $token_data['full_name'] ?? ($token_data['org_name'] . ' Admin');
                         $stmt = $conn->prepare("INSERT INTO users (email, password, full_name, role_id, organization_id, status) VALUES (?, ?, ?, ?, ?, 'active')");
                         $stmt->bind_param("sssii", $token_data['email'], $hashed_password, $temp_full_name, $admin_role['id'], $token_data['org_id']);
+                        $update_success = $stmt->execute();
+                        
+                        if ($update_success) {
+                            $user_id = $conn->insert_id;
+                        } else {
+                            $error = 'Error creating user: ' . $conn->error;
+                        }
                     } else {
                         $error = 'System error. Please contact support.';
-                        $user_id = null;
                     }
                 }
                 
-                if ($user_id || ($stmt && $stmt->execute())) {
-                    if (!$user_id) {
-                        $user_id = $conn->insert_id;
-                    }
+                if ($update_success) {
                     
-                    // Mark token as used based on type
+                    // IMPORTANT: Mark token as used ONLY after successful password update
+                    // This prevents the token from being reused
                     if ($token_type == 'reset') {
                         $stmt = $conn->prepare("UPDATE password_reset_tokens SET used = 1 WHERE token = ?");
                     } else {
@@ -196,7 +336,14 @@ if (empty($token)) {
             <?php endif; ?>
             
             <?php if ($error): ?>
-                <div class="alert alert-error"><?php echo htmlspecialchars($error); ?></div>
+                <div class="alert alert-error">
+                    <?php echo htmlspecialchars($error); ?>
+                    <?php if (strpos($error, 'already been used') !== false || strpos($error, 'expired') !== false || strpos($error, 'Invalid or expired') !== false): ?>
+                        <div style="margin-top: 12px;">
+                            <a href="forgot_password" style="color: #667eea; text-decoration: underline; font-weight: 500;">Request a new password reset link</a>
+                        </div>
+                    <?php endif; ?>
+                </div>
             <?php endif; ?>
             
             <?php if ($success): ?>

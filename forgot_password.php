@@ -53,7 +53,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
                 )");
                 
-                // Invalidate any existing tokens for this user
+                // IMPORTANT: Invalidate any existing unused tokens for this user when requesting a new reset
+                // This ensures only the latest password reset link is valid
                 $stmt = $conn->prepare("UPDATE password_reset_tokens SET used = 1 WHERE user_id = ? AND used = 0");
                 $stmt->bind_param("i", $user['id']);
                 $stmt->execute();

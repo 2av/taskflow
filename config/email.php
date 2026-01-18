@@ -205,7 +205,7 @@ function sendPasswordResetEmail($email, $organization_name, $token) {
         return false;
     }
     
-    $reset_url = buildUrl('reset_password.php', ['token' => $token]);
+    $reset_url = buildUrl('reset_password', ['token' => $token]);
     $subject = "Reset Your Password - " . $organization_name;
     $message = getPasswordResetEmail($organization_name, $reset_url);
     
