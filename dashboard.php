@@ -274,12 +274,95 @@ if ($selected_project_id) {
     }
 }
 
+// Get upcoming deadlines (tasks with due dates in next 7 days)
+$upcoming_deadlines = [];
+if ($selected_project_id) {
+    $upcoming_query = "
+        SELECT t.*, u.full_name as assignee_name, s.name as status_name, s.color as status_color
+        FROM tasks t
+        LEFT JOIN users u ON t.assignee_id = u.id
+        LEFT JOIN statuses s ON t.status_id = s.id
+        WHERE t.project_id = ? 
+        AND t.due_date IS NOT NULL 
+        AND t.due_date >= CURDATE() 
+        AND t.due_date <= DATE_ADD(CURDATE(), INTERVAL 7 DAY)
+        AND (s.name != 'Done' OR s.name IS NULL OR t.status_id IS NULL)
+        ORDER BY t.due_date ASC
+        LIMIT 10
+    ";
+    $stmt = $conn->prepare($upcoming_query);
+    if ($stmt) {
+        $stmt->bind_param("i", $selected_project_id);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $upcoming_deadlines = $result->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+    }
+}
+
+// Get recent tasks (last 10 created/updated)
+$recent_tasks = [];
+if ($selected_project_id) {
+    $recent_query = "
+        SELECT t.*, u.full_name as assignee_name, u2.full_name as creator_name, 
+               s.name as status_name, s.color as status_color,
+               GREATEST(t.created_at, COALESCE(t.updated_at, t.created_at)) as last_modified
+        FROM tasks t
+        LEFT JOIN users u ON t.assignee_id = u.id
+        LEFT JOIN users u2 ON t.created_by = u2.id
+        LEFT JOIN statuses s ON t.status_id = s.id
+        WHERE t.project_id = ?
+        ORDER BY last_modified DESC
+        LIMIT 10
+    ";
+    $stmt = $conn->prepare($recent_query);
+    if ($stmt) {
+        $stmt->bind_param("i", $selected_project_id);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $recent_tasks = $result->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+    }
+}
+
+// Get team members for the project
+$team_members = [];
+if ($selected_project_id) {
+    $team_query = "
+        SELECT DISTINCT u.id, u.full_name, u.email, u.status,
+               CASE WHEN p.project_manager_id = u.id THEN 'Project Manager' 
+                    WHEN pu.user_id IS NOT NULL THEN 'Team Member'
+                    ELSE 'Other' END as role_in_project
+        FROM users u
+        LEFT JOIN projects p ON p.id = ? AND p.project_manager_id = u.id
+        LEFT JOIN project_users pu ON pu.project_id = ? AND pu.user_id = u.id
+        WHERE (p.project_manager_id = u.id OR pu.user_id IS NOT NULL)
+        AND u.organization_id = (SELECT organization_id FROM projects WHERE id = ?)
+        ORDER BY 
+            CASE WHEN p.project_manager_id = u.id THEN 1 ELSE 2 END,
+            u.full_name ASC
+    ";
+    $stmt = $conn->prepare($team_query);
+    if ($stmt) {
+        $stmt->bind_param("iii", $selected_project_id, $selected_project_id, $selected_project_id);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $team_members = $result->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+    }
+}
+
+// Initialize variables that will be calculated later
+$overall_total = 0;
+$project_status_counts = [];
+$project_completion = 0;
+
 // Get last activity with user information
 $last_activity = null;
 if ($selected_project_id) {
     // Get last activity for selected project
     $last_activity_query = "
-        SELECT al.*, u.full_name as user_name, u.username, t.title as task_title, t.id as task_id, p.name as project_name
+        SELECT al.*, u.full_name as user_name, u.email, t.title as task_title, t.id as task_id, p.name as project_name
         FROM activity_logs al
         JOIN users u ON al.user_id = u.id
         JOIN tasks t ON al.task_id = t.id
@@ -300,7 +383,7 @@ if ($selected_project_id) {
     // Get last activity across all accessible projects
     if (isSuperAdmin()) {
         $last_activity_query = "
-            SELECT al.*, u.full_name as user_name, u.username, t.title as task_title, t.id as task_id, p.name as project_name
+            SELECT al.*, u.full_name as user_name, u.email, t.title as task_title, t.id as task_id, p.name as project_name
             FROM activity_logs al
             JOIN users u ON al.user_id = u.id
             JOIN tasks t ON al.task_id = t.id
@@ -315,7 +398,7 @@ if ($selected_project_id) {
     } else if (isOrgAdmin()) {
         $org_id = getOrganizationId();
         $last_activity_query = "
-            SELECT al.*, u.full_name as user_name, u.username, t.title as task_title, t.id as task_id, p.name as project_name
+            SELECT al.*, u.full_name as user_name, u.email, t.title as task_title, t.id as task_id, p.name as project_name
             FROM activity_logs al
             JOIN users u ON al.user_id = u.id
             JOIN tasks t ON al.task_id = t.id
@@ -335,7 +418,7 @@ if ($selected_project_id) {
     } else if (isProjectManager()) {
         $user_id = $_SESSION['user_id'];
         $last_activity_query = "
-            SELECT al.*, u.full_name as user_name, u.username, t.title as task_title, t.id as task_id, p.name as project_name
+            SELECT al.*, u.full_name as user_name, u.email, t.title as task_title, t.id as task_id, p.name as project_name
             FROM activity_logs al
             JOIN users u ON al.user_id = u.id
             JOIN tasks t ON al.task_id = t.id
@@ -357,7 +440,7 @@ if ($selected_project_id) {
         // Team member - only their assigned tasks
         $user_id = $_SESSION['user_id'];
         $last_activity_query = "
-            SELECT al.*, u.full_name as user_name, u.username, t.title as task_title, t.id as task_id, p.name as project_name
+            SELECT al.*, u.full_name as user_name, u.email, t.title as task_title, t.id as task_id, p.name as project_name
             FROM activity_logs al
             JOIN users u ON al.user_id = u.id
             JOIN tasks t ON al.task_id = t.id
@@ -1233,6 +1316,23 @@ include 'includes/header.php';
             }
             $overall_total = array_sum($project_status_counts);
         }
+        
+        // Calculate project completion percentage (after $overall_total is set)
+        if ($overall_total > 0) {
+            // Find "Done" or "Completed" status
+            $done_count = 0;
+            foreach ($statuses as $status) {
+                $status_name_lower = strtolower($status['name']);
+                if (strpos($status_name_lower, 'done') !== false || 
+                    strpos($status_name_lower, 'complete') !== false ||
+                    strpos($status_name_lower, 'closed') !== false) {
+                    $done_count += $project_status_counts[$status['name']] ?? 0;
+                }
+            }
+            $project_completion = round(($done_count / $overall_total) * 100, 1);
+        } else {
+            $project_completion = 0;
+        }
         ?>
         
         <!-- Projects Overview Card -->
@@ -1262,48 +1362,50 @@ include 'includes/header.php';
                 </div>
             </div>
             
-            <!-- Status Badges -->
-            <div class="status-badges-container" style="display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap;">
-                <?php foreach ($statuses as $status): 
-                    $status_name = $status['name'];
-                    $status_count = $project_status_counts[$status_name] ?? 0;
-                    $status_color = $status['color'];
-                    
-                    // Determine icon based on status name
-                    $status_icon = 'fa-circle';
-                    if (stripos($status_name, 'todo') !== false || stripos($status_name, 'to do') !== false) {
-                        $status_icon = 'fa-circle';
-                    } elseif (stripos($status_name, 'progress') !== false || stripos($status_name, 'active') !== false) {
-                        $status_icon = 'fa-spinner';
-                    } elseif (stripos($status_name, 'done') !== false || stripos($status_name, 'closed') !== false || stripos($status_name, 'complete') !== false) {
-                        $status_icon = 'fa-check-circle';
-                    }
-                ?>
-                <div class="status-badge" style="display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 12px 16px; background: <?php echo htmlspecialchars($status_color); ?>; color: white; border-radius: 6px; font-size: 14px; font-weight: 500;">
-                    <div style="display: flex; align-items: center; gap: 6px;">
-                        <i class="fas <?php echo $status_icon; ?>" style="font-size: <?php echo ($status_icon == 'fa-circle') ? '8px' : '12px'; ?>;"></i>
-                        <span><?php echo htmlspecialchars($status_name); ?></span>
-                    </div>
-                    <span class="status-count" style="font-size: 18px; font-weight: 700; margin-top: 2px;"><?php echo $status_count; ?></span>
-                </div>
-                <?php endforeach; ?>
-                <?php if (empty($statuses)): ?>
-                    <!-- Fallback if no statuses found -->
-                    <div class="status-badge" style="display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 12px 16px; background: var(--chart-yellow); color: white; border-radius: 6px; font-size: 14px; font-weight: 500;">
-                        <div style="display: flex; align-items: center; gap: 6px;">
-                            <i class="fas fa-circle" style="font-size: 8px;"></i>
-                            <span>To Do</span>
-                        </div>
-                        <span class="status-count" style="font-size: 18px; font-weight: 700; margin-top: 2px;">0</span>
-                    </div>
-                <?php endif; ?>
-            </div>
-            
+              
             
             <!-- Unified Charts Layout -->
             <div class="charts-grid-layout" style="display: grid; grid-template-columns: 1.2fr 1fr 1.5fr; gap: 24px; margin-top: 24px; align-items: start;">
-                <!-- Left: Progress Bars + Bar Chart Combined -->
-                <div>
+             <!-- Center: Circular Gauge Chart -->
+             <div style="display: flex; flex-direction: column; align-items: center; justify-content: center;">
+                    <h3 style="font-size: 13px; font-weight: 600; color: var(--text-secondary); margin: 0 0 20px 0; text-transform: uppercase; letter-spacing: 0.5px;">Overall Progress</h3>
+                    <div style="position: relative; display: inline-block;">
+                        <svg width="140" height="140" viewBox="0 0 140 140">
+                            <circle cx="70" cy="70" r="60" fill="none" stroke="#E5E7EB" stroke-width="14"/>
+                            <?php 
+                            // Build circular gauge chart dynamically from statuses (use first 3 statuses)
+                            $circumference = 2 * M_PI * 60;
+                            $start_offset = -$circumference * 0.25;
+                            $gauge_statuses = array_slice($statuses, 0, 3); // Use first 3 statuses for gauge
+                            
+                            foreach ($gauge_statuses as $gauge_status):
+                                $status_name = $gauge_status['name'];
+                                $status_count = $project_status_counts[$status_name] ?? 0;
+                                $status_percent = $overall_total > 0 ? ($status_count / $overall_total) : 0;
+                                $status_dash = $circumference * $status_percent;
+                                
+                                // Convert hex color to format for SVG (remove # if present)
+                                $status_color = ltrim($gauge_status['color'], '#');
+                                
+                                if ($status_count > 0):
+                            ?>
+                            <circle cx="70" cy="70" r="60" fill="none" stroke="#<?php echo htmlspecialchars($status_color); ?>" 
+                                    stroke-width="14" stroke-dasharray="<?php echo $status_dash; ?> <?php echo $circumference; ?>" 
+                                    stroke-dashoffset="<?php echo $start_offset; ?>" transform="rotate(-90 70 70)"/>
+                            <?php 
+                                    $start_offset += $status_dash;
+                                endif;
+                            endforeach;
+                            ?>
+                        </svg>
+                        <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center;">
+                            <div style="font-size: 24px; font-weight: 700; color: var(--text-primary); line-height: 1.2;"><?php echo $overall_total; ?></div>
+                            <div style="font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px;">Total Tasks</div>
+                        </div>
+                    </div>
+                </div>    
+            <!-- Left: Progress Bars + Bar Chart Combined -->
+            <div>
                     <h3 style="font-size: 13px; font-weight: 600; color: var(--text-secondary); margin: 0 0 16px 0; text-transform: uppercase; letter-spacing: 0.5px;">Task Distribution</h3>
                     <!-- Progress Bars -->
                     <div style="margin-bottom: 24px;">
@@ -1352,44 +1454,7 @@ include 'includes/header.php';
                     </div>
                 </div>
                 
-                <!-- Center: Circular Gauge Chart -->
-                <div style="display: flex; flex-direction: column; align-items: center; justify-content: center;">
-                    <h3 style="font-size: 13px; font-weight: 600; color: var(--text-secondary); margin: 0 0 20px 0; text-transform: uppercase; letter-spacing: 0.5px;">Overall Progress</h3>
-                    <div style="position: relative; display: inline-block;">
-                        <svg width="140" height="140" viewBox="0 0 140 140">
-                            <circle cx="70" cy="70" r="60" fill="none" stroke="#E5E7EB" stroke-width="14"/>
-                            <?php 
-                            // Build circular gauge chart dynamically from statuses (use first 3 statuses)
-                            $circumference = 2 * M_PI * 60;
-                            $start_offset = -$circumference * 0.25;
-                            $gauge_statuses = array_slice($statuses, 0, 3); // Use first 3 statuses for gauge
-                            
-                            foreach ($gauge_statuses as $gauge_status):
-                                $status_name = $gauge_status['name'];
-                                $status_count = $project_status_counts[$status_name] ?? 0;
-                                $status_percent = $overall_total > 0 ? ($status_count / $overall_total) : 0;
-                                $status_dash = $circumference * $status_percent;
-                                
-                                // Convert hex color to format for SVG (remove # if present)
-                                $status_color = ltrim($gauge_status['color'], '#');
-                                
-                                if ($status_count > 0):
-                            ?>
-                            <circle cx="70" cy="70" r="60" fill="none" stroke="#<?php echo htmlspecialchars($status_color); ?>" 
-                                    stroke-width="14" stroke-dasharray="<?php echo $status_dash; ?> <?php echo $circumference; ?>" 
-                                    stroke-dashoffset="<?php echo $start_offset; ?>" transform="rotate(-90 70 70)"/>
-                            <?php 
-                                    $start_offset += $status_dash;
-                                endif;
-                            endforeach;
-                            ?>
-                        </svg>
-                        <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center;">
-                            <div style="font-size: 24px; font-weight: 700; color: var(--text-primary); line-height: 1.2;"><?php echo $overall_total; ?></div>
-                            <div style="font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px;">Total Tasks</div>
-                        </div>
-                    </div>
-                </div>
+               
                 
                 <!-- Right: Area Line Chart - Task Trends -->
                 <div>
@@ -1476,6 +1541,187 @@ include 'includes/header.php';
                 </div>
             </div>
         </div>
+        
+        <!-- Additional Dashboard Sections -->
+        <?php if ($selected_project_id): ?>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 24px;">
+            <!-- Left Column: Upcoming Deadlines & Recent Tasks -->
+            <div style="display: flex; flex-direction: column; gap: 24px;">
+                <!-- Upcoming Deadlines -->
+                <div class="premium-card">
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;">
+                        <h3 style="font-size: 16px; font-weight: 600; color: var(--text-primary); margin: 0; display: flex; align-items: center; gap: 8px;">
+                            <i class="fas fa-calendar-alt" style="color: var(--chart-red); font-size: 14px;"></i>
+                            <span>Upcoming Deadlines</span>
+                        </h3>
+                        <span style="font-size: 12px; color: var(--text-secondary);">Next 7 days</span>
+                    </div>
+                    <?php if (empty($upcoming_deadlines)): ?>
+                        <div style="text-align: center; padding: 32px 16px; color: var(--text-muted);">
+                            <i class="fas fa-check-circle" style="font-size: 32px; margin-bottom: 8px; opacity: 0.5;"></i>
+                            <p style="font-size: 14px; margin: 0;">No upcoming deadlines</p>
+                        </div>
+                    <?php else: ?>
+                        <div style="display: flex; flex-direction: column; gap: 12px;">
+                            <?php foreach ($upcoming_deadlines as $deadline): 
+                                $due_date = strtotime($deadline['due_date']);
+                                $days_left = ceil(($due_date - time()) / 86400);
+                                $is_overdue = $days_left < 0;
+                                $is_today = $days_left == 0;
+                                $is_tomorrow = $days_left == 1;
+                                
+                                $urgency_color = $is_overdue ? 'var(--chart-red)' : ($is_today ? 'var(--chart-yellow)' : 'var(--chart-green)');
+                                $urgency_text = $is_overdue ? abs($days_left) . ' days overdue' : ($is_today ? 'Due today' : ($is_tomorrow ? 'Due tomorrow' : $days_left . ' days left'));
+                            ?>
+                                <a href="task_view?id=<?php echo $deadline['id']; ?>" 
+                                   style="display: flex; align-items: center; gap: 12px; padding: 12px; background: var(--page-bg); border-radius: 8px; border: 1px solid var(--border-color); text-decoration: none; transition: all 0.2s;"
+                                   onmouseover="this.style.borderColor='var(--blue)'; this.style.boxShadow='0 2px 8px rgba(59, 130, 246, 0.1)';"
+                                   onmouseout="this.style.borderColor='var(--border-color)'; this.style.boxShadow='none';">
+                                    <div style="min-width: 60px; text-align: center; padding: 8px; background: <?php echo $urgency_color; ?>15; border-radius: 6px; border: 1px solid <?php echo $urgency_color; ?>40;">
+                                        <div style="font-size: 18px; font-weight: 700; color: <?php echo $urgency_color; ?>; line-height: 1;">
+                                            <?php echo date('d', $due_date); ?>
+                                        </div>
+                                        <div style="font-size: 10px; color: var(--text-secondary); text-transform: uppercase; margin-top: 2px;">
+                                            <?php echo date('M', $due_date); ?>
+                                        </div>
+                                    </div>
+                                    <div style="flex: 1; min-width: 0;">
+                                        <div style="font-size: 14px; font-weight: 600; color: var(--text-primary); margin-bottom: 4px; line-height: 1.3;">
+                                            <?php echo htmlspecialchars($deadline['title']); ?>
+                                        </div>
+                                        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--text-secondary);">
+                                            <?php if ($deadline['assignee_name']): ?>
+                                                <span><i class="fas fa-user" style="font-size: 10px;"></i> <?php echo htmlspecialchars($deadline['assignee_name']); ?></span>
+                                            <?php endif; ?>
+                                            <?php if ($deadline['status_name']): ?>
+                                                <span style="display: inline-flex; align-items: center; gap: 4px;">
+                                                    <span style="width: 8px; height: 8px; background: <?php echo htmlspecialchars($deadline['status_color'] ?? '#6b7280'); ?>; border-radius: 50%;"></span>
+                                                    <?php echo htmlspecialchars($deadline['status_name']); ?>
+                                                </span>
+                                            <?php endif; ?>
+                                        </div>
+                                    </div>
+                                    <div style="font-size: 11px; font-weight: 600; color: <?php echo $urgency_color; ?>; white-space: nowrap;">
+                                        <?php echo $urgency_text; ?>
+                                    </div>
+                                </a>
+                            <?php endforeach; ?>
+                        </div>
+                    <?php endif; ?>
+                </div>
+                
+                <!-- Recent Tasks -->
+                <div class="premium-card">
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;">
+                        <h3 style="font-size: 16px; font-weight: 600; color: var(--text-primary); margin: 0; display: flex; align-items: center; gap: 8px;">
+                            <i class="fas fa-history" style="color: var(--blue); font-size: 14px;"></i>
+                            <span>Recent Tasks</span>
+                        </h3>
+                        <a href="tasks?project_id=<?php echo $selected_project_id; ?>" 
+                           style="font-size: 12px; color: var(--blue); text-decoration: none; font-weight: 500;">
+                            View All
+                        </a>
+                    </div>
+                    <?php if (empty($recent_tasks)): ?>
+                        <div style="text-align: center; padding: 32px 16px; color: var(--text-muted);">
+                            <i class="fas fa-tasks" style="font-size: 32px; margin-bottom: 8px; opacity: 0.5;"></i>
+                            <p style="font-size: 14px; margin: 0;">No recent tasks</p>
+                        </div>
+                    <?php else: ?>
+                        <div style="display: flex; flex-direction: column; gap: 10px;">
+                            <?php foreach ($recent_tasks as $task): ?>
+                                <a href="task_view?id=<?php echo $task['id']; ?>" 
+                                   style="display: flex; align-items: center; gap: 12px; padding: 10px; background: var(--page-bg); border-radius: 6px; border: 1px solid var(--border-color); text-decoration: none; transition: all 0.2s;"
+                                   onmouseover="this.style.borderColor='var(--blue)'; this.style.boxShadow='0 2px 8px rgba(59, 130, 246, 0.1)';"
+                                   onmouseout="this.style.borderColor='var(--border-color)'; this.style.boxShadow='none';">
+                                    <div style="width: 40px; height: 40px; border-radius: 6px; background: <?php echo htmlspecialchars($task['status_color'] ?? '#6b7280'); ?>20; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+                                        <i class="fas fa-tasks" style="color: <?php echo htmlspecialchars($task['status_color'] ?? '#6b7280'); ?>; font-size: 16px;"></i>
+                                    </div>
+                                    <div style="flex: 1; min-width: 0;">
+                                        <div style="font-size: 14px; font-weight: 500; color: var(--text-primary); margin-bottom: 4px; line-height: 1.3;">
+                                            <?php echo htmlspecialchars($task['title']); ?>
+                                        </div>
+                                        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11px; color: var(--text-secondary);">
+                                            <?php if ($task['assignee_name']): ?>
+                                                <span><i class="fas fa-user" style="font-size: 9px;"></i> <?php echo htmlspecialchars($task['assignee_name']); ?></span>
+                                            <?php endif; ?>
+                                            <?php if ($task['status_name']): ?>
+                                                <span style="display: inline-flex; align-items: center; gap: 4px;">
+                                                    <span style="width: 6px; height: 6px; background: <?php echo htmlspecialchars($task['status_color'] ?? '#6b7280'); ?>; border-radius: 50%;"></span>
+                                                    <?php echo htmlspecialchars($task['status_name']); ?>
+                                                </span>
+                                            <?php endif; ?>
+                                        </div>
+                                    </div>
+                                    <div style="font-size: 11px; color: var(--text-muted); white-space: nowrap;">
+                                        <?php echo timeAgo($task['last_modified']); ?>
+                                    </div>
+                                </a>
+                            <?php endforeach; ?>
+                        </div>
+                    <?php endif; ?>
+                </div>
+            </div>
+            
+            <!-- Right Column: Project Completion -->
+            <div style="display: flex; flex-direction: column; gap: 24px;">
+                <!-- Project Completion Percentage -->
+                <div class="premium-card">
+                    <div style="margin-bottom: 16px;">
+                        <h3 style="font-size: 16px; font-weight: 600; color: var(--text-primary); margin: 0 0 8px 0; display: flex; align-items: center; gap: 8px;">
+                            <i class="fas fa-chart-pie" style="color: var(--chart-green); font-size: 14px;"></i>
+                            <span>Project Completion</span>
+                        </h3>
+                        <p style="font-size: 12px; color: var(--text-secondary); margin: 0;">Overall progress indicator</p>
+                    </div>
+                    <div style="display: flex; flex-direction: column; align-items: center; padding: 24px;">
+                        <div style="position: relative; width: 160px; height: 160px; margin-bottom: 20px;">
+                            <svg width="160" height="160" viewBox="0 0 160 160" style="transform: rotate(-90deg);">
+                                <circle cx="80" cy="80" r="70" fill="none" stroke="#E5E7EB" stroke-width="12"/>
+                                <circle cx="80" cy="80" r="70" fill="none" 
+                                        stroke="var(--chart-green)" 
+                                        stroke-width="12" 
+                                        stroke-dasharray="<?php echo 2 * M_PI * 70 * ($project_completion / 100); ?> <?php echo 2 * M_PI * 70; ?>" 
+                                        stroke-dashoffset="0"
+                                        stroke-linecap="round"/>
+                            </svg>
+                            <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center;">
+                                <div style="font-size: 36px; font-weight: 700; color: var(--text-primary); line-height: 1.2;">
+                                    <?php echo $project_completion; ?>%
+                                </div>
+                                <div style="font-size: 12px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px;">
+                                    Complete
+                                </div>
+                            </div>
+                        </div>
+                        <div style="width: 100%; text-align: center; padding-top: 16px; border-top: 1px solid var(--border-color);">
+                            <div style="display: flex; justify-content: space-around; gap: 16px;">
+                                <div style="text-align: center;">
+                                    <div style="font-size: 20px; font-weight: 700; color: var(--text-primary);"><?php echo $overall_total; ?></div>
+                                    <div style="font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px;">Total Tasks</div>
+                                </div>
+                                <div style="text-align: center;">
+                                    <?php 
+                                    $done_count = 0;
+                                    foreach ($statuses as $status) {
+                                        $status_name_lower = strtolower($status['name']);
+                                        if (strpos($status_name_lower, 'done') !== false || 
+                                            strpos($status_name_lower, 'complete') !== false ||
+                                            strpos($status_name_lower, 'closed') !== false) {
+                                            $done_count += $project_status_counts[$status['name']] ?? 0;
+                                        }
+                                    }
+                                    ?>
+                                    <div style="font-size: 20px; font-weight: 700; color: var(--chart-green);"><?php echo $done_count; ?></div>
+                                    <div style="font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px;">Completed</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <?php endif; ?>
         
         <?php if (!$selected_project && !empty($projects)): ?>
             <!-- Empty State: No Project Selected -->

@@ -11,7 +11,6 @@ $error = '';
 
 // Handle user creation
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['create_user'])) {
-    $username = trim($_POST['username']);
     $email = trim($_POST['email']);
     $password = $_POST['password'];
     $full_name = trim($_POST['full_name']);
@@ -19,25 +18,37 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['create_user'])) {
     $status = $_POST['status'];
     $organization_id = isSuperAdmin() ? (isset($_POST['organization_id']) && !empty($_POST['organization_id']) ? intval($_POST['organization_id']) : null) : getOrganizationId();
     
-    if (empty($username) || empty($email) || empty($password) || empty($full_name)) {
+    if (empty($email) || empty($password) || empty($full_name)) {
         $error = 'All fields are required';
+    } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        $error = 'Please enter a valid email address';
     } elseif (!$organization_id && !isSuperAdmin()) {
         $error = 'Organization not found';
     } else {
-        $hashed_password = password_hash($password, PASSWORD_DEFAULT);
-        if ($organization_id) {
-            $stmt = $conn->prepare("INSERT INTO users (username, email, password, full_name, role_id, organization_id, status) VALUES (?, ?, ?, ?, ?, ?, ?)");
-            $stmt->bind_param("ssssiis", $username, $email, $hashed_password, $full_name, $role_id, $organization_id, $status);
-        } else {
-            // Super Admin creating user without organization
-            $stmt = $conn->prepare("INSERT INTO users (username, email, password, full_name, role_id, organization_id, status) VALUES (?, ?, ?, ?, ?, NULL, ?)");
-            $stmt->bind_param("ssssis", $username, $email, $hashed_password, $full_name, $role_id, $status);
-        }
+        // Check if email already exists
+        $check_stmt = $conn->prepare("SELECT id FROM users WHERE email = ?");
+        $check_stmt->bind_param("s", $email);
+        $check_stmt->execute();
+        $check_result = $check_stmt->get_result();
         
-        if ($stmt->execute()) {
-            $message = 'User created successfully';
+        if ($check_result->num_rows > 0) {
+            $error = 'Email address already exists';
         } else {
-            $error = 'Error creating user: ' . $conn->error;
+            $hashed_password = password_hash($password, PASSWORD_DEFAULT);
+            if ($organization_id) {
+                $stmt = $conn->prepare("INSERT INTO users (email, password, full_name, role_id, organization_id, status) VALUES (?, ?, ?, ?, ?, ?)");
+                $stmt->bind_param("sssiis", $email, $hashed_password, $full_name, $role_id, $organization_id, $status);
+            } else {
+                // Super Admin creating user without organization
+                $stmt = $conn->prepare("INSERT INTO users (email, password, full_name, role_id, organization_id, status) VALUES (?, ?, ?, ?, NULL, ?)");
+                $stmt->bind_param("sssis", $email, $hashed_password, $full_name, $role_id, $status);
+            }
+            
+            if ($stmt->execute()) {
+                $message = 'User created successfully';
+            } else {
+                $error = 'Error creating user: ' . $conn->error;
+            }
         }
     }
 }
@@ -45,36 +56,51 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['create_user'])) {
 // Handle user update
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_user'])) {
     $user_id = intval($_POST['user_id']);
-    $username = trim($_POST['username']);
     $email = trim($_POST['email']);
     $full_name = trim($_POST['full_name']);
     $role_id = intval($_POST['role_id']);
     $status = $_POST['status'];
     $organization_id = isSuperAdmin() ? (isset($_POST['organization_id']) && !empty($_POST['organization_id']) ? intval($_POST['organization_id']) : null) : getOrganizationId();
     
-    if (!empty($_POST['password'])) {
-        $hashed_password = password_hash($_POST['password'], PASSWORD_DEFAULT);
-        if ($organization_id) {
-            $stmt = $conn->prepare("UPDATE users SET username=?, email=?, password=?, full_name=?, role_id=?, organization_id=?, status=? WHERE id=?");
-            $stmt->bind_param("ssssiisi", $username, $email, $hashed_password, $full_name, $role_id, $organization_id, $status, $user_id);
-        } else {
-            $stmt = $conn->prepare("UPDATE users SET username=?, email=?, password=?, full_name=?, role_id=?, organization_id=NULL, status=? WHERE id=?");
-            $stmt->bind_param("ssssisi", $username, $email, $hashed_password, $full_name, $role_id, $status, $user_id);
-        }
+    if (empty($email) || empty($full_name)) {
+        $error = 'Email and full name are required';
+    } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        $error = 'Please enter a valid email address';
     } else {
-        if ($organization_id) {
-            $stmt = $conn->prepare("UPDATE users SET username=?, email=?, full_name=?, role_id=?, organization_id=?, status=? WHERE id=?");
-            $stmt->bind_param("sssiisi", $username, $email, $full_name, $role_id, $organization_id, $status, $user_id);
+        // Check if email already exists for another user
+        $check_stmt = $conn->prepare("SELECT id FROM users WHERE email = ? AND id != ?");
+        $check_stmt->bind_param("si", $email, $user_id);
+        $check_stmt->execute();
+        $check_result = $check_stmt->get_result();
+        
+        if ($check_result->num_rows > 0) {
+            $error = 'Email address already exists for another user';
         } else {
-            $stmt = $conn->prepare("UPDATE users SET username=?, email=?, full_name=?, role_id=?, organization_id=NULL, status=? WHERE id=?");
-            $stmt->bind_param("sssisi", $username, $email, $full_name, $role_id, $status, $user_id);
+            if (!empty($_POST['password'])) {
+                $hashed_password = password_hash($_POST['password'], PASSWORD_DEFAULT);
+                if ($organization_id) {
+                    $stmt = $conn->prepare("UPDATE users SET email=?, password=?, full_name=?, role_id=?, organization_id=?, status=? WHERE id=?");
+                    $stmt->bind_param("sssiisi", $email, $hashed_password, $full_name, $role_id, $organization_id, $status, $user_id);
+                } else {
+                    $stmt = $conn->prepare("UPDATE users SET email=?, password=?, full_name=?, role_id=?, organization_id=NULL, status=? WHERE id=?");
+                    $stmt->bind_param("sssisi", $email, $hashed_password, $full_name, $role_id, $status, $user_id);
+                }
+            } else {
+                if ($organization_id) {
+                    $stmt = $conn->prepare("UPDATE users SET email=?, full_name=?, role_id=?, organization_id=?, status=? WHERE id=?");
+                    $stmt->bind_param("ssiisi", $email, $full_name, $role_id, $organization_id, $status, $user_id);
+                } else {
+                    $stmt = $conn->prepare("UPDATE users SET email=?, full_name=?, role_id=?, organization_id=NULL, status=? WHERE id=?");
+                    $stmt->bind_param("ssisi", $email, $full_name, $role_id, $status, $user_id);
+                }
+            }
+            
+            if ($stmt->execute()) {
+                $message = 'User updated successfully';
+            } else {
+                $error = 'Error updating user: ' . $conn->error;
+            }
         }
-    }
-    
-    if ($stmt->execute()) {
-        $message = 'User updated successfully';
-    } else {
-        $error = 'Error updating user: ' . $conn->error;
     }
 }
 
@@ -177,7 +203,6 @@ include 'includes/header.php';
         <table>
             <thead>
                 <tr>
-                    <th>Username</th>
                     <th>Email</th>
                     <th>Full Name</th>
                     <th>Role</th>
@@ -201,12 +226,9 @@ include 'includes/header.php';
                 <?php else: ?>
                     <?php foreach ($users as $user): ?>
                         <tr>
-                            <td>
-                                <strong style="color: #1e293b; font-size: 15px;"><?php echo htmlspecialchars($user['username']); ?></strong>
-                            </td>
                             <td style="color: #64748b;">
                                 <i class="fas fa-envelope" style="margin-right: 6px; color: #94a3b8;"></i>
-                                <?php echo htmlspecialchars($user['email']); ?>
+                                <strong style="color: #1e293b; font-size: 15px;"><?php echo htmlspecialchars($user['email']); ?></strong>
                             </td>
                             <td style="color: #475569;">
                                 <?php echo htmlspecialchars($user['full_name']); ?>
@@ -290,12 +312,6 @@ include 'includes/header.php';
             <?php else: ?>
                 <input type="hidden" name="create_user" value="1">
             <?php endif; ?>
-            
-            <div class="form-group">
-                <label for="username">Username *</label>
-                <input type="text" id="username" name="username" required 
-                       value="<?php echo htmlspecialchars($edit_user['username'] ?? ''); ?>">
-            </div>
             
             <div class="form-group">
                 <label for="email">Email *</label>

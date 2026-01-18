@@ -10,15 +10,17 @@ if (isLoggedIn()) {
 $error = '';
 
 if ($_SERVER['REQUEST_METHOD'] == 'POST') {
-    $username = trim($_POST['username'] ?? '');
+    $email = trim($_POST['email'] ?? '');
     $password = $_POST['password'] ?? '';
     
-    if (empty($username) || empty($password)) {
-        $error = 'Please enter both username and password';
+    if (empty($email) || empty($password)) {
+        $error = 'Please enter both email and password';
+    } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        $error = 'Please enter a valid email address';
     } else {
         $conn = getDBConnection();
-        $stmt = $conn->prepare("SELECT u.*, r.name as role_name FROM users u JOIN roles r ON u.role_id = r.id WHERE (u.username = ? OR u.email = ?) AND u.status = 'active'");
-        $stmt->bind_param("ss", $username, $username);
+        $stmt = $conn->prepare("SELECT u.*, r.name as role_name FROM users u JOIN roles r ON u.role_id = r.id WHERE u.email = ? AND u.status = 'active'");
+        $stmt->bind_param("s", $email);
         $stmt->execute();
         $result = $stmt->get_result();
         
@@ -26,7 +28,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             $user = $result->fetch_assoc();
             if (password_verify($password, $user['password'])) {
                 $_SESSION['user_id'] = $user['id'];
-                $_SESSION['username'] = $user['username'];
                 $_SESSION['full_name'] = $user['full_name'];
                 $_SESSION['role_id'] = $user['role_id'];
                 $_SESSION['role_name'] = $user['role_name'];
@@ -36,10 +37,10 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 header('Location: dashboard');
                 exit();
             } else {
-                $error = 'Invalid username or password';
+                $error = 'Invalid email or password';
             }
         } else {
-            $error = 'Invalid username or password';
+            $error = 'Invalid email or password';
         }
         
         $conn->close();
@@ -69,17 +70,23 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             
             <form method="POST" action="">
                 <div class="form-group">
-                    <label for="username">Username or Email</label>
-                    <input type="text" id="username" name="username" required autofocus>
+                    <label for="email">Email Address</label>
+                    <input type="email" id="email" name="email" required autofocus placeholder="Enter your email address">
                 </div>
                 
                 <div class="form-group">
                     <label for="password">Password</label>
-                    <input type="password" id="password" name="password" required>
+                    <input type="password" id="password" name="password" required placeholder="Enter your password">
                 </div>
                 
                 <button type="submit" class="btn btn-primary btn-block" title="Login"><i class="fas fa-sign-in-alt"></i> Login</button>
             </form>
+            
+            <div style="text-align: center; margin-top: 15px;">
+                <a href="forgot_password" style="color: #667eea; text-decoration: none; font-size: 14px;">
+                    <i class="fas fa-key"></i> Forgot Password?
+                </a>
+            </div>
             
             <div style="text-align: center; margin-top: 20px;">
                 <a href="register_organization" style="color: #667eea; text-decoration: none;">Register Your Organization</a>

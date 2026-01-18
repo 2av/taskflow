@@ -477,7 +477,7 @@ $has_parent_id = $check_column->num_rows > 0;
 // Get comments with replies (nested structure)
 if ($has_parent_id) {
     $comments_stmt = $conn->prepare("
-        SELECT c.*, u.full_name as user_name, u.username, u.id as user_table_id
+        SELECT c.*, u.full_name as user_name, u.email, u.id as user_table_id
         FROM task_comments c
         JOIN users u ON c.user_id = u.id
         WHERE c.task_id = ? AND (c.parent_id IS NULL OR c.parent_id = 0)
@@ -492,7 +492,7 @@ if ($has_parent_id) {
     foreach ($comments as &$comment) {
         $comment_id = intval($comment['id']);
         $replies_stmt = $conn->prepare("
-            SELECT c.*, u.full_name as user_name, u.username, u.id as user_table_id
+            SELECT c.*, u.full_name as user_name, u.email, u.id as user_table_id
             FROM task_comments c
             JOIN users u ON c.user_id = u.id
             WHERE c.parent_id = ? AND c.task_id = ?
@@ -506,7 +506,7 @@ if ($has_parent_id) {
 } else {
     // If parent_id doesn't exist, get all comments as top-level
     $comments_query = "
-        SELECT c.*, u.full_name as user_name, u.username, u.id as user_table_id
+        SELECT c.*, u.full_name as user_name, u.email, u.id as user_table_id
     FROM task_comments c
     JOIN users u ON c.user_id = u.id
     WHERE c.task_id = $task_id
@@ -529,11 +529,11 @@ $activities = $conn->query("
 
 // Get users for assignee dropdown and @mentions (filtered by organization)
 if (isSuperAdmin()) {
-    $users_list = $conn->query("SELECT id, full_name, username FROM users WHERE status = 'active' ORDER BY full_name")->fetch_all(MYSQLI_ASSOC);
+    $users_list = $conn->query("SELECT id, full_name, email FROM users WHERE status = 'active' ORDER BY full_name")->fetch_all(MYSQLI_ASSOC);
 } else {
     $org_id = getOrganizationId();
     if ($org_id) {
-        $stmt = $conn->prepare("SELECT id, full_name, username FROM users WHERE organization_id = ? AND status = 'active' ORDER BY full_name");
+        $stmt = $conn->prepare("SELECT id, full_name, email FROM users WHERE organization_id = ? AND status = 'active' ORDER BY full_name");
         $stmt->bind_param("i", $org_id);
         $stmt->execute();
         $result = $stmt->get_result();
@@ -2645,7 +2645,7 @@ function handleMention(textarea) {
 function showMentionAutocomplete(textarea, searchTerm, position) {
     const filteredUsers = usersData.filter(user => 
         user.full_name.toLowerCase().includes(searchTerm) || 
-        (user.username && user.username.toLowerCase().includes(searchTerm))
+        (user.email && user.email.toLowerCase().includes(searchTerm))
     );
     
     if (filteredUsers.length === 0) {

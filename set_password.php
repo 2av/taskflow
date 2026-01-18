@@ -28,13 +28,9 @@ if (empty($token)) {
         if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             $password = $_POST['password'] ?? '';
             $confirm_password = $_POST['confirm_password'] ?? '';
-            $username = trim($_POST['username'] ?? '');
-            $full_name = trim($_POST['full_name'] ?? '');
             
-            if (empty($password) || empty($confirm_password) || empty($username) || empty($full_name)) {
+            if (empty($password) || empty($confirm_password)) {
                 $error = 'Please fill in all fields';
-                if (empty($full_name)) $field_errors['full_name'] = true;
-                if (empty($username)) $field_errors['username'] = true;
                 if (empty($password)) $field_errors['password'] = true;
                 if (empty($confirm_password)) $field_errors['confirm_password'] = true;
             } elseif ($password !== $confirm_password) {
@@ -46,16 +42,43 @@ if (empty($token)) {
                 $field_errors['password'] = true;
                 $field_errors['confirm_password'] = true;
             } else {
-                // Check if username already exists
-                $stmt = $conn->prepare("SELECT id FROM users WHERE username = ?");
-                $stmt->bind_param("s", $username);
+                // Check if user already exists (should exist from organization verification)
+                $stmt = $conn->prepare("SELECT id, status FROM users WHERE email = ? AND organization_id = ?");
+                $stmt->bind_param("si", $token_data['email'], $token_data['organization_id']);
                 $stmt->execute();
                 $result = $stmt->get_result();
+                $existing_user = $result->fetch_assoc();
                 
-                if ($result->num_rows > 0) {
-                    $error = 'Username already exists. Please choose a different username.';
-                    $field_errors['username'] = true;
+                if ($existing_user) {
+                    // Update existing user with new password
+                    $hashed_password = password_hash($password, PASSWORD_DEFAULT);
+                    $stmt = $conn->prepare("UPDATE users SET password = ?, status = 'active' WHERE id = ?");
+                    $stmt->bind_param("si", $hashed_password, $existing_user['id']);
+                    
+                    if ($stmt->execute()) {
+                        // Mark token as used
+                        $stmt = $conn->prepare("UPDATE password_tokens SET used = 1 WHERE token = ?");
+                        $stmt->bind_param("s", $token);
+                        $stmt->execute();
+                        
+                        // Activate organization
+                        $stmt = $conn->prepare("UPDATE organizations SET account_status = 'ACTIVE', status = 'active' WHERE id = ?");
+                        $stmt->bind_param("i", $token_data['organization_id']);
+                        $stmt->execute();
+                        
+                        // Send account activated email
+                        require_once 'config/email.php';
+                        sendAccountActivatedEmail($token_data['email'], $token_data['org_name']);
+                        
+                        $success = 'Password set successfully! Your account has been activated. Redirecting to login in 5 seconds...';
+                        
+                        // Redirect after 5 seconds
+                        header("Refresh: 5; url=index");
+                    } else {
+                        $error = 'Error updating password: ' . $conn->error;
+                    }
                 } else {
+                    // User doesn't exist - create new user (fallback for old registrations)
                     // Get Admin role ID
                     $stmt = $conn->prepare("SELECT id FROM roles WHERE name = 'Admin'");
                     $stmt->execute();
@@ -65,8 +88,9 @@ if (empty($token)) {
                     if ($admin_role) {
                         // Create admin user
                         $hashed_password = password_hash($password, PASSWORD_DEFAULT);
-                        $stmt = $conn->prepare("INSERT INTO users (username, email, password, full_name, role_id, organization_id) VALUES (?, ?, ?, ?, ?, ?)");
-                        $stmt->bind_param("ssssii", $username, $token_data['email'], $hashed_password, $full_name, $admin_role['id'], $token_data['organization_id']);
+                        $temp_full_name = $token_data['org_name'] . ' Admin';
+                        $stmt = $conn->prepare("INSERT INTO users (email, password, full_name, role_id, organization_id, status) VALUES (?, ?, ?, ?, ?, 'active')");
+                        $stmt->bind_param("sssii", $token_data['email'], $hashed_password, $temp_full_name, $admin_role['id'], $token_data['organization_id']);
                         
                         if ($stmt->execute()) {
                             // Mark token as used
@@ -74,7 +98,19 @@ if (empty($token)) {
                             $stmt->bind_param("s", $token);
                             $stmt->execute();
                             
-                            $success = 'Password set successfully! You can now login.';
+                            // Activate organization
+                            $stmt = $conn->prepare("UPDATE organizations SET account_status = 'ACTIVE', status = 'active' WHERE id = ?");
+                            $stmt->bind_param("i", $token_data['organization_id']);
+                            $stmt->execute();
+                            
+                            // Send account activated email
+                            require_once 'config/email.php';
+                            sendAccountActivatedEmail($token_data['email'], $token_data['org_name']);
+                            
+                            $success = 'Password set successfully! Your account has been activated. Redirecting to login in 5 seconds...';
+                            
+                            // Redirect after 5 seconds
+                            header("Refresh: 5; url=index");
                         } else {
                             $error = 'Error creating account: ' . $conn->error;
                         }
@@ -125,34 +161,33 @@ if (empty($token)) {
             <?php endif; ?>
             
             <?php if ($success): ?>
-                <div class="alert alert-success"><?php echo htmlspecialchars($success); ?></div>
-                <div style="text-align: center; margin-top: 20px;">
-                    <a href="index" class="btn btn-primary">Go to Login</a>
+                <div class="alert alert-success">
+                    <?php echo htmlspecialchars($success); ?>
+                    <div id="countdown" style="margin-top: 10px; font-size: 14px; color: #059669;"></div>
                 </div>
+                <div style="text-align: center; margin-top: 20px;">
+                    <a href="index" class="btn btn-primary">Go to Login Now</a>
+                </div>
+                <script>
+                    let countdown = 5;
+                    const countdownEl = document.getElementById('countdown');
+                    const interval = setInterval(() => {
+                        countdown--;
+                        if (countdown > 0) {
+                            countdownEl.textContent = `Redirecting in ${countdown} second${countdown !== 1 ? 's' : ''}...`;
+                        } else {
+                            countdownEl.textContent = 'Redirecting now...';
+                            clearInterval(interval);
+                        }
+                    }, 1000);
+                </script>
             <?php elseif (isset($token_data)): ?>
                 <form method="POST" action="">
                     <input type="hidden" name="token" value="<?php echo htmlspecialchars($token); ?>">
                     
                     <div class="form-group">
-                        <label for="full_name">Full Name *</label>
-                        <input type="text" id="full_name" name="full_name" required autofocus 
-                               value="<?php echo htmlspecialchars($_POST['full_name'] ?? ''); ?>"
-                               placeholder="Enter your full name"
-                               class="<?php echo isset($field_errors['full_name']) ? 'error-field' : ''; ?>">
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="username">Username *</label>
-                        <input type="text" id="username" name="username" required 
-                               value="<?php echo htmlspecialchars($_POST['username'] ?? ''); ?>"
-                               placeholder="Choose a username"
-                               class="<?php echo isset($field_errors['username']) ? 'error-field' : ''; ?>">
-                        <small style="color: #666;">This will be your login username</small>
-                    </div>
-                    
-                    <div class="form-group">
                         <label for="password">Password *</label>
-                        <input type="password" id="password" name="password" required minlength="6"
+                        <input type="password" id="password" name="password" required minlength="6" autofocus
                                placeholder="Enter password" autocomplete="new-password"
                                class="<?php echo isset($field_errors['password']) ? 'error-field' : ''; ?>">
                         <small style="color: #666;">Minimum 6 characters</small>
