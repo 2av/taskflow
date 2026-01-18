@@ -55,8 +55,25 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['create_task'])) {
         $status_id = $default_status ? $default_status['id'] : null;
         $status_name = $default_status ? $default_status['name'] : 'To Do';
         
-        $stmt = $conn->prepare("INSERT INTO tasks (task_id, project_id, title, description, type, priority, status_id, status, assignee_id, due_date, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-        $stmt->bind_param("sissssissi", $task_id, $project_id, $title, $description, $type, $priority, $status_id, $status_name, $assignee_id, $due_date, $created_by);
+        // Handle NULL values properly for assignee_id and due_date
+        // For mysqli, we need to use a different approach when values can be NULL
+        if ($assignee_id === null && $due_date === null) {
+            // 9 parameters: task_id(s), project_id(i), title(s), description(s), type(s), priority(s), status_id(i), status_name(s), created_by(i)
+            $stmt = $conn->prepare("INSERT INTO tasks (task_id, project_id, title, description, type, priority, status_id, status, assignee_id, due_date, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)");
+            $stmt->bind_param("sissssisi", $task_id, $project_id, $title, $description, $type, $priority, $status_id, $status_name, $created_by);
+        } elseif ($assignee_id === null) {
+            // 10 parameters: task_id(s), project_id(i), title(s), description(s), type(s), priority(s), status_id(i), status_name(s), due_date(s), created_by(i)
+            $stmt = $conn->prepare("INSERT INTO tasks (task_id, project_id, title, description, type, priority, status_id, status, assignee_id, due_date, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)");
+            $stmt->bind_param("sissssissi", $task_id, $project_id, $title, $description, $type, $priority, $status_id, $status_name, $due_date, $created_by);
+        } elseif ($due_date === null) {
+            // 10 parameters: task_id(s), project_id(i), title(s), description(s), type(s), priority(s), status_id(i), status_name(s), assignee_id(i), created_by(i)
+            $stmt = $conn->prepare("INSERT INTO tasks (task_id, project_id, title, description, type, priority, status_id, status, assignee_id, due_date, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)");
+            $stmt->bind_param("sissssissi", $task_id, $project_id, $title, $description, $type, $priority, $status_id, $status_name, $assignee_id, $created_by);
+        } else {
+            // 11 parameters: task_id(s), project_id(i), title(s), description(s), type(s), priority(s), status_id(i), status_name(s), assignee_id(i), due_date(s), created_by(i)
+            $stmt = $conn->prepare("INSERT INTO tasks (task_id, project_id, title, description, type, priority, status_id, status, assignee_id, due_date, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            $stmt->bind_param("sissssissii", $task_id, $project_id, $title, $description, $type, $priority, $status_id, $status_name, $assignee_id, $due_date, $created_by);
+        }
         
         if ($stmt->execute()) {
             $task_insert_id = $conn->insert_id;
@@ -406,7 +423,7 @@ $total_pages = ceil($total_items / $items_per_page);
 
 // Get tasks with pagination
 $query = "
-    SELECT t.*, p.name as project_name, u.full_name as assignee_name, u2.full_name as creator_name,
+    SELECT t.*, t.task_id, t.type, p.name as project_name, u.full_name as assignee_name, u2.full_name as creator_name,
            COALESCE(s.name, t.status, 'To Do') as status,
            t.status_id
     FROM tasks t
@@ -1009,7 +1026,7 @@ if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQ
     
     $tasks_html = '';
     if (empty($tasks)) {
-        $tasks_html = '<tr><td colspan="6" style="text-align: center; color: #999;">No tasks found</td></tr>';
+        $tasks_html = '<tr><td colspan="7" style="text-align: center; color: #999;">No tasks found</td></tr>';
     } else {
         foreach ($tasks as $task) {
             // Get icon for task type
@@ -1075,25 +1092,33 @@ if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQ
             }
             
             $tasks_html .= '<tr class="hover:bg-blue-50 transition-colors cursor-pointer" style="transition: background-color 0.2s ease;">';
+            // Task ID / Type column
             $tasks_html .= '<td class="px-6 py-4 whitespace-nowrap" style="cursor: pointer;" onclick="window.location.href=\'task_view?id=' . $task['id'] . '\'">';
-            $tasks_html .= '<div class="flex items-center gap-2">';
-            $tasks_html .= '<span class="font-semibold text-gray-900">' . htmlspecialchars($task['task_id']) . '</span>';
-            $tasks_html .= '<i class="fas ' . $type_icon . ' text-sm" style="color: ' . $type_color . ';" title="' . htmlspecialchars($task['type']) . '"></i>';
+            $tasks_html .= '<div style="display: flex; gap: 8px; align-items: center;">';
+            $tasks_html .= '<span style="font-size: 12px; font-weight: 600; color: var(--text-primary);">' . htmlspecialchars($task['task_id'] ?? '—') . '</span>';
+            $tasks_html .= '<i class="fas ' . $type_icon . '" style="font-size: 12px; color: ' . $type_color . '; display: inline-block; padding: 4px 0px;" title="' . htmlspecialchars($task['type'] ?? 'Task') . '"></i>';
             $tasks_html .= '</div>';
             $tasks_html .= '</td>';
+            // Task title column
             $tasks_html .= '<td class="px-6 py-4" style="cursor: pointer;" onclick="window.location.href=\'task_view?id=' . $task['id'] . '\'">';
             $tasks_html .= '<div class="text-sm text-gray-900 font-medium">' . htmlspecialchars($task['title']) . '</div>';
             $tasks_html .= '</td>';
+            // Project column
             $tasks_html .= '<td class="px-6 py-4 whitespace-nowrap text-center">';
-            $tasks_html .= '<span class="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full ' . $priority_style['bg'] . ' ' . $priority_style['text'] . '">';
-            $tasks_html .= '<i class="fas ' . $priority_style['icon'] . ' ' . $priority_style['icon_color'] . ' text-xs"></i>';
-            $tasks_html .= htmlspecialchars($task['priority']);
-            $tasks_html .= '</span>';
+            $tasks_html .= htmlspecialchars($task['project_name'] ?? '—');
             $tasks_html .= '</td>';
+            // Status column
             $tasks_html .= '<td class="px-6 py-4 whitespace-nowrap text-center">';
             $tasks_html .= '<span class="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full ' . $status_style['bg'] . ' ' . $status_style['text'] . '">';
             $tasks_html .= '<i class="fas ' . $status_style['icon'] . ' ' . $status_style['icon_color'] . ' text-xs"></i>';
             $tasks_html .= htmlspecialchars(normalizeStatusForDisplay($task['status'] ?? 'To Do'));
+            $tasks_html .= '</span>';
+            $tasks_html .= '</td>';
+            // Priority column
+            $tasks_html .= '<td class="px-6 py-4 whitespace-nowrap text-center">';
+            $tasks_html .= '<span class="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full ' . $priority_style['bg'] . ' ' . $priority_style['text'] . '">';
+            $tasks_html .= '<i class="fas ' . $priority_style['icon'] . ' ' . $priority_style['icon_color'] . ' text-xs"></i>';
+            $tasks_html .= htmlspecialchars($task['priority']);
             $tasks_html .= '</span>';
             $tasks_html .= '</td>';
             $tasks_html .= '<td class="px-6 py-4 whitespace-nowrap text-center">';
@@ -1863,6 +1888,7 @@ include 'includes/header.php';
         <table class="tasks-table">
             <thead>
                 <tr>
+                    <th>Task ID / Type</th>
                     <th>Task</th>
                     <th>Project</th>
                     <th style="text-align: center;">Status</th>
@@ -1877,7 +1903,7 @@ include 'includes/header.php';
                 if (!isset($tasks) || empty($tasks)): 
                 ?>
                     <tr>
-                        <td colspan="6" style="text-align: center; padding: 48px 16px; color: var(--text-muted);">
+                        <td colspan="7" style="text-align: center; padding: 48px 16px; color: var(--text-muted);">
                             <i class="fas fa-tasks" style="font-size: 48px; opacity: 0.3; margin-bottom: 12px; display: block;"></i>
                             <p style="margin: 0; font-size: 14px;">No tasks found</p>
                             <?php if (!empty($filter_project)): ?>
@@ -1938,6 +1964,25 @@ include 'includes/header.php';
                         }
                         ?>
                         <tr data-task-id="<?php echo $task['id']; ?>" style="cursor: pointer; transition: background-color 0.2s;" class="task-row">
+                            <td>
+                                <?php
+                                // Get icon for task type
+                                $task_type = $task['type'] ?? 'Task';
+                                $type_icon = 'fa-tasks';
+                                $type_color = '#14b8a6';
+                                if ($task_type == 'Bug') {
+                                    $type_icon = 'fa-bug';
+                                    $type_color = '#e74c3c';
+                                } elseif ($task_type == 'Improvement') {
+                                    $type_icon = 'fa-lightbulb';
+                                    $type_color = '#f39c12';
+                                }
+                                ?>
+                                <div style="display: flex; gap: 8px; align-items: center;">
+                                    <span style="font-size: 12px; font-weight: 600; color: var(--text-primary);"><?php echo htmlspecialchars($task['task_id'] ?? '—'); ?></span>
+                                    <i class="fas <?php echo $type_icon; ?>" style="font-size: 12px; color: <?php echo $type_color; ?>; display: inline-block; padding: 4px 0px;" title="<?php echo htmlspecialchars($task_type); ?>"></i>
+                                </div>
+                            </td>
                             <td>
                                 <div class="task-name-cell">
                                     <span class="task-name-text"><?php echo htmlspecialchars($task['title']); ?></span>

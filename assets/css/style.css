@@ -2016,7 +2016,7 @@ table tbody tr:empty {
     object-fit: cover;
     display: block;
 }
-}
+
 
 .mobile-profile-info {
     flex: 1;
@@ -2256,7 +2256,7 @@ table tbody tr:empty {
     .content-wrapper {
         padding: 0;
         margin-top: 0;
-        margin-bottom: 80px !important;
+        margin-bottom: 40px !important;
     }
     
     /* Add padding to content areas on mobile for better spacing */
