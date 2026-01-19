@@ -2,11 +2,11 @@
 /**
  * Email Configuration
  */
-define('SMTP_HOST', 'ayodhyakashiyatra.com');
+define('SMTP_HOST', 'agprimetech.com');
 define('SMTP_PORT', 465);
-define('SMTP_USERNAME', 'no-reply@ayodhyakashiyatra.com');
+define('SMTP_USERNAME', 'no-reply@agprimetech.com');
 define('SMTP_PASSWORD', 'HanumanJi@2025');
-define('SMTP_FROM_EMAIL', 'no-reply@ayodhyakashiyatra.com');
+define('SMTP_FROM_EMAIL', 'no-reply@agprimetech.com');
 define('SMTP_FROM_NAME', 'Task Flow System');
 define('SMTP_SECURE', 'ssl'); // ssl or tls
 define('SMTP_ENCRYPTION', 'ssl'); // Alias for SMTP_SECURE
@@ -112,6 +112,12 @@ function loadEmailTemplates() {
     if (file_exists($templates_dir . 'password_reset.php')) {
         require_once $templates_dir . 'password_reset.php';
     }
+    if (file_exists($templates_dir . 'user_added.php')) {
+        require_once $templates_dir . 'user_added.php';
+    }
+    if (file_exists($templates_dir . 'project_assignment_request.php')) {
+        require_once $templates_dir . 'project_assignment_request.php';
+    }
 }
 
 // Load email templates
@@ -210,5 +216,37 @@ function sendPasswordResetEmail($email, $organization_name, $token) {
     $message = getPasswordResetEmail($organization_name, $reset_url);
     
     return sendEmail($email, $subject, $message, true);
+}
+
+/**
+ * Send User Added by Organization Email
+ */
+function sendUserAddedEmail($email, $organization_name, $user_name, $token) {
+    if (!function_exists('getUserAddedEmail')) {
+        error_log('User added email template not found');
+        return false;
+    }
+    
+    $reset_url = buildUrl('reset_password', ['token' => $token]);
+    $subject = "Welcome to " . $organization_name . " - Set Your Password";
+    $message = getUserAddedEmail($organization_name, $user_name, $reset_url);
+    
+    return sendEmail($email, $subject, $message, true);
+}
+
+/**
+ * Send Project Assignment Request Email to Admin
+ */
+function sendProjectAssignmentRequestEmail($admin_email, $admin_name, $requester_name, $requester_email, $organization_name) {
+    if (!function_exists('getProjectAssignmentRequestEmail')) {
+        error_log('Project assignment request email template not found');
+        return false;
+    }
+    
+    $dashboard_url = buildUrl('dashboard');
+    $subject = "Project Assignment Request - " . $organization_name;
+    $message = getProjectAssignmentRequestEmail($admin_name, $requester_name, $requester_email, $organization_name, $dashboard_url);
+    
+    return sendEmail($admin_email, $subject, $message, true);
 }
 ?>

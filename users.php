@@ -1,5 +1,6 @@
 <?php
 require_once 'config/config.php';
+require_once 'config/email.php';
 requireAdmin();
 requireActiveSubscription();
 
@@ -12,14 +13,14 @@ $error = '';
 // Handle user creation
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['create_user'])) {
     $email = trim($_POST['email']);
-    $password = $_POST['password'];
+    $password = $_POST['password'] ?? '';
     $full_name = trim($_POST['full_name']);
     $role_id = intval($_POST['role_id']);
     $status = $_POST['status'];
     $organization_id = isSuperAdmin() ? (isset($_POST['organization_id']) && !empty($_POST['organization_id']) ? intval($_POST['organization_id']) : null) : getOrganizationId();
     
-    if (empty($email) || empty($password) || empty($full_name)) {
-        $error = 'All fields are required';
+    if (empty($email) || empty($full_name)) {
+        $error = 'Email and full name are required';
     } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
         $error = 'Please enter a valid email address';
     } elseif (!$organization_id && !isSuperAdmin()) {
@@ -34,7 +35,19 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['create_user'])) {
         if ($check_result->num_rows > 0) {
             $error = 'Email address already exists';
         } else {
-            $hashed_password = password_hash($password, PASSWORD_DEFAULT);
+            // If password is provided, use it; otherwise create temporary password and send reset link
+            $password_provided = !empty($password);
+            
+            if ($password_provided) {
+                $hashed_password = password_hash($password, PASSWORD_DEFAULT);
+            } else {
+                // Generate temporary password (user will set their own via email link)
+                $temp_password = bin2hex(random_bytes(32));
+                $hashed_password = password_hash($temp_password, PASSWORD_DEFAULT);
+                // Set status to inactive if no password provided
+                $status = 'inactive';
+            }
+            
             if ($organization_id) {
                 $stmt = $conn->prepare("INSERT INTO users (email, password, full_name, role_id, organization_id, status) VALUES (?, ?, ?, ?, ?, ?)");
                 $stmt->bind_param("sssiis", $email, $hashed_password, $full_name, $role_id, $organization_id, $status);
@@ -45,7 +58,54 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['create_user'])) {
             }
             
             if ($stmt->execute()) {
-                $message = 'User created successfully';
+                $user_id = $conn->insert_id;
+                
+                // If password was not provided, create reset token and send email
+                if (!$password_provided && $organization_id) {
+                    // Get organization name
+                    $org_stmt = $conn->prepare("SELECT name FROM organizations WHERE id = ?");
+                    $org_stmt->bind_param("i", $organization_id);
+                    $org_stmt->execute();
+                    $org_result = $org_stmt->get_result();
+                    $org_data = $org_result->fetch_assoc();
+                    $org_name = $org_data['name'] ?? 'Task Flow System';
+                    
+                    // Create password_reset_tokens table if it doesn't exist
+                    $conn->query("CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        user_id INT NOT NULL,
+                        email VARCHAR(255) NOT NULL,
+                        token VARCHAR(64) NOT NULL,
+                        expires_at DATETIME NOT NULL,
+                        used TINYINT(1) DEFAULT 0,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        INDEX idx_token (token),
+                        INDEX idx_email (email),
+                        INDEX idx_user_id (user_id),
+                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                    )");
+                    
+                    // Generate password reset token
+                    $token = bin2hex(random_bytes(32));
+                    $token_expiry = date('Y-m-d H:i:s', strtotime('+24 hours'));
+                    
+                    // Insert token
+                    $token_stmt = $conn->prepare("INSERT INTO password_reset_tokens (user_id, email, token, expires_at) VALUES (?, ?, ?, ?)");
+                    $token_stmt->bind_param("isss", $user_id, $email, $token, $token_expiry);
+                    
+                    if ($token_stmt->execute()) {
+                        // Send user added email with password reset link
+                        if (sendUserAddedEmail($email, $org_name, $full_name, $token)) {
+                            $message = 'User created successfully. An email with password setup instructions has been sent to the user.';
+                        } else {
+                            $message = 'User created successfully, but email could not be sent. Please contact the user directly.';
+                        }
+                    } else {
+                        $message = 'User created successfully, but password reset token could not be generated.';
+                    }
+                } else {
+                    $message = 'User created successfully';
+                }
             } else {
                 $error = 'Error creating user: ' . $conn->error;
             }
@@ -319,10 +379,12 @@ include 'includes/header.php';
                        value="<?php echo htmlspecialchars($edit_user['email'] ?? ''); ?>">
             </div>
             
-            <div class="form-group">
-                <label for="password">Password <?php echo $edit_user ? '(leave blank to keep current)' : '*'; ?></label>
-                <input type="password" id="password" name="password" <?php echo $edit_user ? '' : 'required'; ?>>
-            </div>
+            <?php if ($edit_user): ?>
+                <div class="form-group">
+                    <label for="password">Password (leave blank to keep current)</label>
+                    <input type="password" id="password" name="password">
+                </div>
+            <?php endif; ?>
             
             <div class="form-group">
                 <label for="full_name">Full Name *</label>

@@ -279,6 +279,18 @@ function requireActiveSubscription() {
     }
 }
 
+function isAgPrimeTechAdmin() {
+    return isset($_SESSION['email']) && strtolower($_SESSION['email']) === 'admin@agprimetech.com';
+}
+
+function requireAgPrimeTechAdmin() {
+    requireLogin();
+    if (!isAgPrimeTechAdmin()) {
+        header('Location: dashboard');
+        exit();
+    }
+}
+
 // Load upload system (local storage)
 if (file_exists(__DIR__ . '/upload.php')) {
     require_once __DIR__ . '/upload.php';

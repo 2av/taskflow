@@ -1,5 +1,6 @@
 <?php
 require_once 'config/config.php';
+require_once 'config/email.php';
 requireLogin();
 requireActiveSubscription();
 
@@ -13,57 +14,132 @@ $error = '';
 $organization_id = isSuperAdmin() ? null : getOrganizationId();
 $statuses = getStatuses($organization_id);
 
-// Handle project creation from dashboard
+// Handle project creation from dashboard - Only admins can create projects
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['create_project'])) {
-    $name = trim($_POST['name']);
-    $description = trim($_POST['description'] ?? '');
-    $status = $_POST['status'] ?? 'Active';
-    $project_manager_id = !empty($_POST['project_manager_id']) ? intval($_POST['project_manager_id']) : null;
-    $created_by = $_SESSION['user_id'];
+    // Check if user is admin (Super Admin, Org Admin, or Admin role)
+    if (!isSuperAdmin() && !isOrgAdmin() && !isAdmin()) {
+        $error = 'Only administrators can create projects. Please contact support or request project assignment.';
+    } else {
+        $name = trim($_POST['name']);
+        $description = trim($_POST['description'] ?? '');
+        $status = $_POST['status'] ?? 'Active';
+        $project_manager_id = !empty($_POST['project_manager_id']) ? intval($_POST['project_manager_id']) : null;
+        $created_by = $_SESSION['user_id'];
+        $organization_id = getOrganizationId();
+        
+        if (empty($name)) {
+            $error = 'Project name is required';
+        } elseif (!$organization_id && !isSuperAdmin()) {
+            $error = 'Organization not found';
+        } else {
+            // Handle NULL project_manager_id properly in mysqli
+            if ($project_manager_id === null) {
+                $stmt = $conn->prepare("INSERT INTO projects (name, description, status, organization_id, project_manager_id, created_by) VALUES (?, ?, ?, ?, NULL, ?)");
+                $stmt->bind_param("sssii", $name, $description, $status, $organization_id, $created_by);
+            } else {
+                $stmt = $conn->prepare("INSERT INTO projects (name, description, status, organization_id, project_manager_id, created_by) VALUES (?, ?, ?, ?, ?, ?)");
+                $stmt->bind_param("sssiii", $name, $description, $status, $organization_id, $project_manager_id, $created_by);
+            }
+            
+            if ($stmt->execute()) {
+                $project_id = $conn->insert_id;
+                
+                // Add team members if selected
+                $added_members = [];
+                if (!empty($_POST['team_members']) && is_array($_POST['team_members'])) {
+                    foreach ($_POST['team_members'] as $user_id) {
+                        $user_id = intval($user_id);
+                        $added_members[] = $user_id;
+                        $stmt2 = $conn->prepare("INSERT INTO project_users (project_id, user_id) VALUES (?, ?)");
+                        $stmt2->bind_param("ii", $project_id, $user_id);
+                        $stmt2->execute();
+                    }
+                }
+                
+                // Automatically add creator to project_users if they're not the PM and not already added
+                if ($project_manager_id != $created_by && !in_array($created_by, $added_members)) {
+                    $stmt3 = $conn->prepare("INSERT INTO project_users (project_id, user_id) VALUES (?, ?)");
+                    $stmt3->bind_param("ii", $project_id, $created_by);
+                    $stmt3->execute();
+                }
+                
+                // Refresh the page to show the new project
+                header('Location: dashboard?project_created=1');
+                exit();
+            } else {
+                $error = 'Error creating project: ' . $conn->error;
+            }
+        }
+    }
+}
+
+// Handle project assignment request
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['request_project_assignment'])) {
+    $user_id = $_SESSION['user_id'];
+    $user_email = $_SESSION['email'] ?? '';
+    $user_name = $_SESSION['full_name'] ?? $_SESSION['email'] ?? 'User';
     $organization_id = getOrganizationId();
     
-    if (empty($name)) {
-        $error = 'Project name is required';
-    } elseif (!$organization_id && !isSuperAdmin()) {
-        $error = 'Organization not found';
+    // Get organization name
+    $org_name = 'Task Flow System';
+    if ($organization_id) {
+        $org_stmt = $conn->prepare("SELECT name FROM organizations WHERE id = ?");
+        $org_stmt->bind_param("i", $organization_id);
+        $org_stmt->execute();
+        $org_result = $org_stmt->get_result();
+        if ($org_row = $org_result->fetch_assoc()) {
+            $org_name = $org_row['name'];
+        }
+        $org_stmt->close();
+    }
+    
+    // Get all admins in the organization (Super Admin, Org Admin, or Admin role)
+    if ($organization_id) {
+        $admin_query = "
+            SELECT DISTINCT u.email, u.full_name, r.name as role_name
+            FROM users u
+            JOIN roles r ON u.role_id = r.id
+            WHERE u.organization_id = ? 
+            AND u.status = 'active'
+            AND (r.name = 'Super Admin' OR r.name = 'Admin')
+            ORDER BY u.full_name
+        ";
+        $admin_stmt = $conn->prepare($admin_query);
+        $admin_stmt->bind_param("i", $organization_id);
     } else {
-        // Handle NULL project_manager_id properly in mysqli
-        if ($project_manager_id === null) {
-            $stmt = $conn->prepare("INSERT INTO projects (name, description, status, organization_id, project_manager_id, created_by) VALUES (?, ?, ?, ?, NULL, ?)");
-            $stmt->bind_param("sssii", $name, $description, $status, $organization_id, $created_by);
-        } else {
-            $stmt = $conn->prepare("INSERT INTO projects (name, description, status, organization_id, project_manager_id, created_by) VALUES (?, ?, ?, ?, ?, ?)");
-            $stmt->bind_param("sssiii", $name, $description, $status, $organization_id, $project_manager_id, $created_by);
+        // For Super Admin or users without organization, get all Super Admins
+        $admin_query = "
+            SELECT DISTINCT u.email, u.full_name, r.name as role_name
+            FROM users u
+            JOIN roles r ON u.role_id = r.id
+            WHERE r.name = 'Super Admin'
+            AND u.status = 'active'
+            ORDER BY u.full_name
+        ";
+        $admin_stmt = $conn->prepare($admin_query);
+    }
+    
+    $admin_stmt->execute();
+    $admin_result = $admin_stmt->get_result();
+    $admins = $admin_result->fetch_all(MYSQLI_ASSOC);
+    $admin_stmt->close();
+    
+    if (!empty($admins)) {
+        // Send email to all admins
+        $emails_sent = 0;
+        foreach ($admins as $admin) {
+            if (sendProjectAssignmentRequestEmail($admin['email'], $admin['full_name'] ?? $admin['email'], $user_name, $user_email, $org_name)) {
+                $emails_sent++;
+            }
         }
         
-        if ($stmt->execute()) {
-            $project_id = $conn->insert_id;
-            
-            // Add team members if selected
-            $added_members = [];
-            if (!empty($_POST['team_members']) && is_array($_POST['team_members'])) {
-                foreach ($_POST['team_members'] as $user_id) {
-                    $user_id = intval($user_id);
-                    $added_members[] = $user_id;
-                    $stmt2 = $conn->prepare("INSERT INTO project_users (project_id, user_id) VALUES (?, ?)");
-                    $stmt2->bind_param("ii", $project_id, $user_id);
-                    $stmt2->execute();
-                }
-            }
-            
-            // Automatically add creator to project_users if they're not the PM and not already added
-            if ($project_manager_id != $created_by && !in_array($created_by, $added_members)) {
-                $stmt3 = $conn->prepare("INSERT INTO project_users (project_id, user_id) VALUES (?, ?)");
-                $stmt3->bind_param("ii", $project_id, $created_by);
-                $stmt3->execute();
-            }
-            
-            // Refresh the page to show the new project
-            header('Location: dashboard?project_created=1');
-            exit();
+        if ($emails_sent > 0) {
+            $message = 'Your project assignment request has been sent to ' . $emails_sent . ' administrator(s). They will review your request and assign you to a project soon.';
         } else {
-            $error = 'Error creating project: ' . $conn->error;
+            $error = 'Could not send project assignment request. Please contact support directly.';
         }
+    } else {
+        $error = 'No administrators found. Please contact support directly.';
     }
 }
 
@@ -881,6 +957,10 @@ include 'includes/header.php';
         min-height: calc(100vh - 60px);
     }
     
+    .dashboard-additional-sections {
+        grid-template-columns: 1fr !important;
+    }
+    
     .dashboard-sidebar {
         width: 100%;
         max-height: 0;
@@ -1283,16 +1363,37 @@ include 'includes/header.php';
         <?php if (empty($projects)): ?>
             <!-- Empty State: No Projects -->
             <div class="premium-card" style="text-align: center; padding: 64px 24px; margin-top: 24px;">
-                <i class="fas fa-folder-plus" style="font-size: 64px; color: var(--blue); margin-bottom: 24px; opacity: 0.7;"></i>
-                <h2 style="font-size: 24px; font-weight: 600; color: var(--text-primary); margin: 0 0 12px 0;">No Projects Yet</h2>
-                <p style="font-size: 16px; color: var(--text-secondary); margin: 0 0 32px 0; max-width: 500px; margin-left: auto; margin-right: auto;">
-                    Get started by creating your first project. Projects help you organize and track your tasks efficiently.
-                </p>
-                <button type="button" onclick="openAddProjectModal()" 
-                        style="display: inline-flex; align-items: center; gap: 8px; padding: 12px 24px; background: var(--blue); color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: 500; cursor: pointer; transition: all 0.2s; box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);">
-                    <i class="fas fa-plus"></i>
-                    <span>Add Your First Project</span>
-                </button>
+                <?php if (isSuperAdmin() || isOrgAdmin() || isAdmin()): ?>
+                    <!-- Admin View: Can create projects -->
+                    <i class="fas fa-folder-plus" style="font-size: 64px; color: var(--blue); margin-bottom: 24px; opacity: 0.7;"></i>
+                    <h2 style="font-size: 24px; font-weight: 600; color: var(--text-primary); margin: 0 0 12px 0;">No Projects Yet</h2>
+                    <p style="font-size: 16px; color: var(--text-secondary); margin: 0 0 32px 0; max-width: 500px; margin-left: auto; margin-right: auto;">
+                        Get started by creating your first project. Projects help you organize and track your tasks efficiently.
+                    </p>
+                    <button type="button" onclick="openAddProjectModal()" 
+                            style="display: inline-flex; align-items: center; gap: 8px; padding: 12px 24px; background: var(--blue); color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: 500; cursor: pointer; transition: all 0.2s; box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);">
+                        <i class="fas fa-plus"></i>
+                        <span>Add Your First Project</span>
+                    </button>
+                <?php else: ?>
+                    <!-- Non-Admin View: Request project assignment -->
+                    <i class="fas fa-folder-open" style="font-size: 64px; color: var(--blue); margin-bottom: 24px; opacity: 0.7;"></i>
+                    <h2 style="font-size: 24px; font-weight: 600; color: var(--text-primary); margin: 0 0 12px 0;">No Projects Assigned</h2>
+                    <p style="font-size: 16px; color: var(--text-secondary); margin: 0 0 24px 0; max-width: 500px; margin-left: auto; margin-right: auto;">
+                        You don't have any projects assigned yet. Request project assignment from your administrator to get started.
+                    </p>
+                    <form method="POST" action="" style="display: inline-block;">
+                        <input type="hidden" name="request_project_assignment" value="1">
+                        <button type="submit" 
+                                style="display: inline-flex; align-items: center; gap: 8px; padding: 12px 24px; background: var(--blue); color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: 500; cursor: pointer; transition: all 0.2s; box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);">
+                            <i class="fas fa-paper-plane"></i>
+                            <span>Request Project Assignment</span>
+                        </button>
+                    </form>
+                    <p style="font-size: 14px; color: var(--text-secondary); margin: 24px 0 0 0; max-width: 500px; margin-left: auto; margin-right: auto;">
+                        Or contact support at <a href="mailto:support@agprimetech.com" style="color: var(--blue); text-decoration: none;">support@agprimetech.com</a>
+                    </p>
+                <?php endif; ?>
             </div>
         <?php else: ?>
         <?php 
@@ -1366,44 +1467,117 @@ include 'includes/header.php';
             
             <!-- Unified Charts Layout -->
             <div class="charts-grid-layout" style="display: grid; grid-template-columns: 1.2fr 1fr 1.5fr; gap: 24px; margin-top: 24px; align-items: start;">
-             <!-- Center: Circular Gauge Chart -->
+             <!-- Center: Donut Chart -->
              <div style="display: flex; flex-direction: column; align-items: center; justify-content: center;">
                     <h3 style="font-size: 13px; font-weight: 600; color: var(--text-secondary); margin: 0 0 20px 0; text-transform: uppercase; letter-spacing: 0.5px;">Overall Progress</h3>
-                    <div style="position: relative; display: inline-block;">
-                        <svg width="140" height="140" viewBox="0 0 140 140">
-                            <circle cx="70" cy="70" r="60" fill="none" stroke="#E5E7EB" stroke-width="14"/>
-                            <?php 
-                            // Build circular gauge chart dynamically from statuses (use first 3 statuses)
-                            $circumference = 2 * M_PI * 60;
-                            $start_offset = -$circumference * 0.25;
-                            $gauge_statuses = array_slice($statuses, 0, 3); // Use first 3 statuses for gauge
-                            
-                            foreach ($gauge_statuses as $gauge_status):
-                                $status_name = $gauge_status['name'];
-                                $status_count = $project_status_counts[$status_name] ?? 0;
-                                $status_percent = $overall_total > 0 ? ($status_count / $overall_total) : 0;
-                                $status_dash = $circumference * $status_percent;
+                    <div style="display: flex; align-items: center; justify-content: center;">
+                        <!-- Donut Chart -->
+                        <div style="position: relative; display: inline-block;">
+                            <svg width="160" height="160" viewBox="0 0 160 160" style="transform: rotate(-90deg);">
+                                <?php 
+                                // Build donut chart dynamically from all statuses
+                                $radius = 60;
+                                $circumference = 2 * M_PI * $radius;
+                                $stroke_width = 20;
+                                $start_offset = 0;
                                 
-                                // Convert hex color to format for SVG (remove # if present)
-                                $status_color = ltrim($gauge_status['color'], '#');
+                                // Calculate data for each status
+                                $chart_data = [];
+                                foreach ($statuses as $chart_status):
+                                    $status_name = $chart_status['name'];
+                                    $status_count = $project_status_counts[$status_name] ?? 0;
+                                    if ($status_count > 0 && $overall_total > 0):
+                                        $status_percent = ($status_count / $overall_total);
+                                        $status_dash = $circumference * $status_percent;
+                                        $chart_data[] = [
+                                            'name' => $status_name,
+                                            'count' => $status_count,
+                                            'percent' => $status_percent,
+                                            'dash' => $status_dash,
+                                            'offset' => $start_offset,
+                                            'color' => $chart_status['color']
+                                        ];
+                                        $start_offset -= $status_dash;
+                                    endif;
+                                endforeach;
                                 
-                                if ($status_count > 0):
-                            ?>
-                            <circle cx="70" cy="70" r="60" fill="none" stroke="#<?php echo htmlspecialchars($status_color); ?>" 
-                                    stroke-width="14" stroke-dasharray="<?php echo $status_dash; ?> <?php echo $circumference; ?>" 
-                                    stroke-dashoffset="<?php echo $start_offset; ?>" transform="rotate(-90 70 70)"/>
-                            <?php 
-                                    $start_offset += $status_dash;
-                                endif;
-                            endforeach;
-                            ?>
-                        </svg>
-                        <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center;">
-                            <div style="font-size: 24px; font-weight: 700; color: var(--text-primary); line-height: 1.2;"><?php echo $overall_total; ?></div>
-                            <div style="font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px;">Total Tasks</div>
+                                // Draw background circle
+                                ?>
+                                <circle cx="80" cy="80" r="<?php echo $radius; ?>" fill="none" stroke="#E5E7EB" stroke-width="<?php echo $stroke_width; ?>"/>
+                                
+                                <?php
+                                // Draw donut segments
+                                foreach ($chart_data as $index => $segment):
+                                    $status_color = ltrim($segment['color'], '#');
+                                ?>
+                                <circle cx="80" cy="80" r="<?php echo $radius; ?>" 
+                                        fill="none" 
+                                        stroke="#<?php echo htmlspecialchars($status_color); ?>" 
+                                        stroke-width="<?php echo $stroke_width; ?>"
+                                        stroke-dasharray="<?php echo $segment['dash']; ?> <?php echo $circumference; ?>"
+                                        stroke-dashoffset="<?php echo $segment['offset']; ?>"
+                                        stroke-linecap="round"
+                                        style="cursor: pointer; transition: opacity 0.2s, stroke-width 0.2s;"
+                                        data-status="<?php echo htmlspecialchars($segment['name']); ?>"
+                                        data-count="<?php echo $segment['count']; ?>"
+                                        data-percent="<?php echo round($segment['percent'] * 100, 1); ?>"
+                                        onmouseover="this.style.opacity='0.8'; this.style.strokeWidth='<?php echo $stroke_width + 2; ?>'; showTooltip(event, '<?php echo htmlspecialchars($segment['name']); ?>', <?php echo $segment['count']; ?>, <?php echo round($segment['percent'] * 100, 1); ?>)"
+                                        onmouseout="this.style.opacity='1'; this.style.strokeWidth='<?php echo $stroke_width; ?>'; hideTooltip()"/>
+                                <?php endforeach; ?>
+                            </svg>
+                            <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; pointer-events: none;">
+                                <div style="font-size: 28px; font-weight: 700; color: var(--text-primary); line-height: 1.2;"><?php echo $overall_total; ?></div>
+                                <div style="font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px;">Total Tasks</div>
+                            </div>
                         </div>
                     </div>
-                </div>    
+                    
+                </div>
+                
+                <script>
+                // Tooltip element (will be created dynamically)
+                let statusTooltip = null;
+                
+                function showTooltip(event, name, count, percent) {
+                    if (!statusTooltip) {
+                        statusTooltip = document.createElement('div');
+                        statusTooltip.id = 'statusTooltip';
+                        statusTooltip.style.cssText = 'position: fixed; background: rgba(0, 0, 0, 0.9); color: white; padding: 10px 14px; border-radius: 8px; font-size: 12px; pointer-events: none; z-index: 10000; display: none; box-shadow: 0 4px 12px rgba(0,0,0,0.4); white-space: nowrap;';
+                        statusTooltip.innerHTML = '<div style="font-weight: 600; margin-bottom: 4px;" id="tooltipName"></div><div style="font-size: 11px; opacity: 0.9;" id="tooltipDetails"></div>';
+                        document.body.appendChild(statusTooltip);
+                    }
+                    
+                    const tooltipName = document.getElementById('tooltipName');
+                    const tooltipDetails = document.getElementById('tooltipDetails');
+                    
+                    if (tooltipName) tooltipName.textContent = name;
+                    if (tooltipDetails) tooltipDetails.textContent = count + ' tasks (' + percent + '%)';
+                    
+                    statusTooltip.style.display = 'block';
+                    updateTooltipPosition(event);
+                }
+                
+                function hideTooltip() {
+                    if (statusTooltip) {
+                        statusTooltip.style.display = 'none';
+                    }
+                }
+                
+                function updateTooltipPosition(event) {
+                    if (!statusTooltip) return;
+                    const x = event.clientX + 15;
+                    const y = event.clientY + 15;
+                    statusTooltip.style.left = x + 'px';
+                    statusTooltip.style.top = y + 'px';
+                }
+                
+                // Update tooltip position on mouse move
+                document.addEventListener('mousemove', function(e) {
+                    if (statusTooltip && statusTooltip.style.display === 'block') {
+                        updateTooltipPosition(e);
+                    }
+                });
+                </script>    
             <!-- Left: Progress Bars + Bar Chart Combined -->
             <div>
                     <h3 style="font-size: 13px; font-weight: 600; color: var(--text-secondary); margin: 0 0 16px 0; text-transform: uppercase; letter-spacing: 0.5px;">Task Distribution</h3>
@@ -1414,43 +1588,26 @@ include 'includes/header.php';
                             $status_count = $project_status_counts[$status_name] ?? 0;
                             $status_color = $status['color'];
                             $status_percentage = $overall_total > 0 ? ($status_count / $overall_total * 100) : 0;
+                            $show_text_inside = $status_percentage >= 15;
                         ?>
-                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
-                            <div style="width: 12px; height: 12px; background: <?php echo htmlspecialchars($status_color); ?>; border-radius: 2px; flex-shrink: 0;"></div>
-                            <div style="flex: 1; height: 10px; background: #E5E7EB; border-radius: 5px; overflow: hidden;">
-                                <div style="height: 100%; background: <?php echo htmlspecialchars($status_color); ?>; width: <?php echo $status_percentage; ?>%; transition: width 0.3s ease;"></div>
+                        <div style="margin-bottom: 12px;">
+                            <div style="position: relative; height: 25px; background: #E5E7EB;  overflow: hidden;">
+                                <div style="position: relative; height: 100%; background: <?php echo htmlspecialchars($status_color); ?>; width: <?php echo $status_percentage; ?>%; transition: width 0.3s ease; <?php echo $show_text_inside ? 'display: flex; align-items: center; padding: 0 12px;' : ''; ?>">
+                                    <?php if ($show_text_inside): ?>
+                                        <span style="font-size: 10px; font-weight: 500; color: white; white-space: nowrap;">
+                                            <?php echo htmlspecialchars($status_name); ?> (<?php echo $status_count; ?>)
+                                        </span>
+                                    <?php endif; ?>
+                                </div>
+                                <?php if (!$show_text_inside): ?>
+                                    <!-- Show text outside if bar is too narrow -->
+                                    <div style="position: absolute; top: 50%; left: 12px; transform: translateY(-50%); font-size: 12px; font-weight: 600; color: var(--text-primary); pointer-events: none; z-index: 1;">
+                                        <?php echo htmlspecialchars($status_name); ?> (<?php echo $status_count; ?>)
+                                    </div>
+                                <?php endif; ?>
                             </div>
-                            <span style="font-size: 12px; font-weight: 600; color: var(--text-primary); min-width: 35px; text-align: right;"><?php echo $status_count; ?></span>
                         </div>
                         <?php endforeach; ?>
-                    </div>
-                    
-                    <!-- Vertical Bar Chart -->
-                    <div style="margin-top: 24px;">
-                        <h3 style="font-size: 13px; font-weight: 600; color: var(--text-secondary); margin: 0 0 16px 0; text-transform: uppercase; letter-spacing: 0.5px;">Status Overview</h3>
-                        <div style="display: flex; align-items: flex-end; gap: 12px; height: 140px; padding: 0 8px;">
-                            <?php 
-                            $bar_data = [];
-                            foreach ($statuses as $status) {
-                                $status_name = $status['name'];
-                                $bar_data[] = [
-                                    'label' => $status_name,
-                                    'value' => $project_status_counts[$status_name] ?? 0,
-                                    'color' => $status['color']
-                                ];
-                            }
-                            $max_bar = $overall_total > 0 ? $overall_total : 1;
-                            foreach ($bar_data as $bar): 
-                                $height = ($bar['value'] / $max_bar) * 100;
-                            ?>
-                                <div style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 8px;">
-                                    <div style="width: 100%; background: <?php echo htmlspecialchars($bar['color']); ?>; border-radius: 6px 6px 0 0; height: <?php echo max($height, 4); ?>%; min-height: 8px; transition: height 0.3s ease;" 
-                                         title="<?php echo htmlspecialchars($bar['label']) . ': ' . $bar['value']; ?>"></div>
-                                    <div style="font-size: 11px; font-weight: 600; color: var(--text-primary);"><?php echo $bar['value']; ?></div>
-                                    <div style="font-size: 10px; color: var(--text-secondary); text-align: center; line-height: 1.2;"><?php echo htmlspecialchars($bar['label']); ?></div>
-                                </div>
-                            <?php endforeach; ?>
-                        </div>
                     </div>
                 </div>
                 
@@ -1544,8 +1701,8 @@ include 'includes/header.php';
         
         <!-- Additional Dashboard Sections -->
         <?php if ($selected_project_id): ?>
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 24px;">
-            <!-- Left Column: Upcoming Deadlines & Recent Tasks -->
+        <div class="dashboard-additional-sections" style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 24px;">
+            <!-- Left Column: Upcoming Deadlines -->
             <div style="display: flex; flex-direction: column; gap: 24px;">
                 <!-- Upcoming Deadlines -->
                 <div class="premium-card">
@@ -1603,58 +1760,6 @@ include 'includes/header.php';
                                     </div>
                                     <div style="font-size: 11px; font-weight: 600; color: <?php echo $urgency_color; ?>; white-space: nowrap;">
                                         <?php echo $urgency_text; ?>
-                                    </div>
-                                </a>
-                            <?php endforeach; ?>
-                        </div>
-                    <?php endif; ?>
-                </div>
-                
-                <!-- Recent Tasks -->
-                <div class="premium-card">
-                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;">
-                        <h3 style="font-size: 16px; font-weight: 600; color: var(--text-primary); margin: 0; display: flex; align-items: center; gap: 8px;">
-                            <i class="fas fa-history" style="color: var(--blue); font-size: 14px;"></i>
-                            <span>Recent Tasks</span>
-                        </h3>
-                        <a href="tasks?project_id=<?php echo $selected_project_id; ?>" 
-                           style="font-size: 12px; color: var(--blue); text-decoration: none; font-weight: 500;">
-                            View All
-                        </a>
-                    </div>
-                    <?php if (empty($recent_tasks)): ?>
-                        <div style="text-align: center; padding: 32px 16px; color: var(--text-muted);">
-                            <i class="fas fa-tasks" style="font-size: 32px; margin-bottom: 8px; opacity: 0.5;"></i>
-                            <p style="font-size: 14px; margin: 0;">No recent tasks</p>
-                        </div>
-                    <?php else: ?>
-                        <div style="display: flex; flex-direction: column; gap: 10px;">
-                            <?php foreach ($recent_tasks as $task): ?>
-                                <a href="task_view?id=<?php echo $task['id']; ?>" 
-                                   style="display: flex; align-items: center; gap: 12px; padding: 10px; background: var(--page-bg); border-radius: 6px; border: 1px solid var(--border-color); text-decoration: none; transition: all 0.2s;"
-                                   onmouseover="this.style.borderColor='var(--blue)'; this.style.boxShadow='0 2px 8px rgba(59, 130, 246, 0.1)';"
-                                   onmouseout="this.style.borderColor='var(--border-color)'; this.style.boxShadow='none';">
-                                    <div style="width: 40px; height: 40px; border-radius: 6px; background: <?php echo htmlspecialchars($task['status_color'] ?? '#6b7280'); ?>20; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
-                                        <i class="fas fa-tasks" style="color: <?php echo htmlspecialchars($task['status_color'] ?? '#6b7280'); ?>; font-size: 16px;"></i>
-                                    </div>
-                                    <div style="flex: 1; min-width: 0;">
-                                        <div style="font-size: 14px; font-weight: 500; color: var(--text-primary); margin-bottom: 4px; line-height: 1.3;">
-                                            <?php echo htmlspecialchars($task['title']); ?>
-                                        </div>
-                                        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11px; color: var(--text-secondary);">
-                                            <?php if ($task['assignee_name']): ?>
-                                                <span><i class="fas fa-user" style="font-size: 9px;"></i> <?php echo htmlspecialchars($task['assignee_name']); ?></span>
-                                            <?php endif; ?>
-                                            <?php if ($task['status_name']): ?>
-                                                <span style="display: inline-flex; align-items: center; gap: 4px;">
-                                                    <span style="width: 6px; height: 6px; background: <?php echo htmlspecialchars($task['status_color'] ?? '#6b7280'); ?>; border-radius: 50%;"></span>
-                                                    <?php echo htmlspecialchars($task['status_name']); ?>
-                                                </span>
-                                            <?php endif; ?>
-                                        </div>
-                                    </div>
-                                    <div style="font-size: 11px; color: var(--text-muted); white-space: nowrap;">
-                                        <?php echo timeAgo($task['last_modified']); ?>
                                     </div>
                                 </a>
                             <?php endforeach; ?>
@@ -2007,7 +2112,8 @@ document.addEventListener('keydown', function(event) {
 });
 </script>
 
-<!-- Add Project Modal -->
+<!-- Add Project Modal - Only for admins -->
+<?php if (isSuperAdmin() || isOrgAdmin() || isAdmin()): ?>
 <div id="addProjectModal" class="modal" style="display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.5);">
     <div class="modal-content" style="background-color: var(--card-bg); margin: 5% auto; padding: 0; border: 1px solid var(--border-color); border-radius: 12px; width: 90%; max-width: 600px; box-shadow: 0 4px 20px rgba(0,0,0,0.15);">
         <div class="modal-header" style="display: flex; align-items: center; justify-content: space-between; padding: 20px 24px; border-bottom: 1px solid var(--border-color);">
@@ -2086,10 +2192,15 @@ document.addEventListener('keydown', function(event) {
         </form>
     </div>
 </div>
+<?php endif; ?>
 
 <script>
-// Add Project Modal Functions
+// Add Project Modal Functions - Only for admins
 function openAddProjectModal() {
+    <?php if (!isSuperAdmin() && !isOrgAdmin() && !isAdmin()): ?>
+        alert('Only administrators can create projects. Please request project assignment or contact support.');
+        return;
+    <?php endif; ?>
     const modal = document.getElementById('addProjectModal');
     if (modal) {
         modal.style.display = 'block';

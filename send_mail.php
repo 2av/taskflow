@@ -28,13 +28,13 @@ if (file_exists(__DIR__ . '/vendor/autoload.php')) {
 
 // SMTP Configuration Constants
 if (!defined('SMTP_HOST')) {
-    define('SMTP_HOST', 'ayodhyakashiyatra.com');
+    define('SMTP_HOST', 'agprimetech.com');
 }
 if (!defined('SMTP_PORT')) {
     define('SMTP_PORT', 465);
 }
 if (!defined('SMTP_USERNAME')) {
-    define('SMTP_USERNAME', 'no-reply@ayodhyakashiyatra.com');
+    define('SMTP_USERNAME', 'no-reply@agprimetech.com');
 }
 if (!defined('SMTP_PASSWORD')) {
     define('SMTP_PASSWORD', 'HanumanJi@2025');
@@ -43,10 +43,10 @@ if (!defined('SMTP_ENCRYPTION')) {
     define('SMTP_ENCRYPTION', 'ssl'); // ssl or tls
 }
 if (!defined('SMTP_FROM_EMAIL')) {
-    define('SMTP_FROM_EMAIL', 'no-reply@ayodhyakashiyatra.com');
+    define('SMTP_FROM_EMAIL', 'no-reply@agprimetech.com');
 }
 if (!defined('SMTP_FROM_NAME')) {
-    define('SMTP_FROM_NAME', 'Ayodhya Kashi Yatra');
+    define('SMTP_FROM_NAME', 'AG Prime Tech');
 }
 
 /**

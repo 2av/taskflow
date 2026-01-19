@@ -125,13 +125,25 @@ if (!isset($page_title)) {
             <div class="relative" id="profileDropdown">
                 <?php 
                 // Get user initials for avatar
-                $full_name = $_SESSION['full_name'];
+                $full_name = $_SESSION['full_name'] ?? $_SESSION['email'] ?? 'User';
+                $full_name = trim($full_name); // Ensure it's not empty
+                if (empty($full_name)) {
+                    $full_name = $_SESSION['email'] ?? 'User';
+                }
+                
                 $name_parts = explode(' ', $full_name);
                 $initials = '';
                 if (count($name_parts) >= 2) {
-                    $initials = strtoupper(substr($name_parts[0], 0, 1) . substr($name_parts[count($name_parts) - 1], 0, 1));
+                    $first_char = !empty($name_parts[0]) ? substr($name_parts[0], 0, 1) : '';
+                    $last_char = !empty($name_parts[count($name_parts) - 1]) ? substr($name_parts[count($name_parts) - 1], 0, 1) : '';
+                    $initials = strtoupper($first_char . $last_char);
                 } else {
                     $initials = strtoupper(substr($full_name, 0, 2));
+                }
+                
+                // Fallback if initials are still empty
+                if (empty($initials)) {
+                    $initials = 'U';
                 }
                 
                 // Get user profile picture
@@ -190,8 +202,8 @@ if (!isset($page_title)) {
                             <?php endif; ?>
                         </div>
                         <div class="profile-dropdown-info">
-                            <div class="profile-dropdown-name"><?php echo htmlspecialchars($_SESSION['full_name']); ?></div>
-                            <div class="profile-dropdown-role"><?php echo htmlspecialchars($_SESSION['role_name']); ?></div>
+                            <div class="profile-dropdown-name"><?php echo htmlspecialchars($_SESSION['full_name'] ?? $_SESSION['email'] ?? 'User'); ?></div>
+                            <div class="profile-dropdown-role"><?php echo htmlspecialchars($_SESSION['role_name'] ?? 'User'); ?></div>
                             <?php if (!empty($org_name)): ?>
                                 <div class="profile-dropdown-org"><?php echo htmlspecialchars($org_name); ?></div>
                             <?php endif; ?>
@@ -203,6 +215,12 @@ if (!isset($page_title)) {
                             <i class="fas fa-user-edit"></i>
                             <span>Edit Profile</span>
                         </a>
+                        <?php if (isAgPrimeTechAdmin()): ?>
+                            <a href="organizations" class="profile-dropdown-item">
+                                <i class="fas fa-building"></i>
+                                <span>Organizations</span>
+                            </a>
+                        <?php endif; ?>
                         <?php if (isOrgAdmin() && !empty($_SESSION['organization_id'])): ?>
                             <a href="edit_organization" class="profile-dropdown-item">
                                 <i class="fas fa-building"></i>
@@ -273,7 +291,7 @@ if (!isset($page_title)) {
                 <?php endif; ?>
             </div>
             <div class="mobile-profile-info">
-                <div class="mobile-profile-name"><?php echo htmlspecialchars($_SESSION['full_name']); ?></div>
+                <div class="mobile-profile-name"><?php echo htmlspecialchars($_SESSION['full_name'] ?? $_SESSION['email'] ?? 'User'); ?></div>
                 <div class="mobile-profile-role"><?php echo htmlspecialchars($_SESSION['role_name']); ?></div>
             </div>
             <button class="mobile-profile-close" onclick="toggleMobileProfileDropdown()">
@@ -285,6 +303,12 @@ if (!isset($page_title)) {
                 <i class="fas fa-user-edit"></i>
                 <span>Edit Profile</span>
             </a>
+            <?php if (isAgPrimeTechAdmin()): ?>
+                <a href="organizations" class="mobile-profile-item">
+                    <i class="fas fa-building"></i>
+                    <span>Organizations</span>
+                </a>
+            <?php endif; ?>
             <?php if (isOrgAdmin() && !empty($_SESSION['organization_id'])): ?>
                 <a href="edit_organization" class="mobile-profile-item">
                     <i class="fas fa-building"></i>
