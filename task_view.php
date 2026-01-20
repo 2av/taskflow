@@ -123,6 +123,148 @@ if (!isAdmin() && !isProjectManager()) {
     }
 }
 
+// Handle task update (all fields at once)
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_task'])) {
+    $new_title = trim($_POST['title'] ?? $task['title']);
+    $new_description = trim($_POST['description'] ?? $task['description'] ?? '');
+    $new_type = $_POST['type'] ?? $task['type'];
+    $new_priority = $_POST['priority'] ?? $task['priority'];
+    $new_status_id = intval($_POST['status_id'] ?? $task['status_id'] ?? 0);
+    $new_assignee_id = !empty($_POST['assignee_id']) ? intval($_POST['assignee_id']) : null;
+    $new_due_date = !empty($_POST['due_date']) ? trim($_POST['due_date']) : null;
+    $user_id = $_SESSION['user_id'];
+    
+    // Validate
+    if (empty($new_title)) {
+        $error = 'Title cannot be empty';
+    } else {
+        // Get status name for backward compatibility
+        $status_name = $task['status'] ?? 'Unknown';
+        if ($new_status_id) {
+            $status_name_query = $conn->prepare("SELECT name FROM statuses WHERE id = ?");
+            $status_name_query->bind_param("i", $new_status_id);
+            $status_name_query->execute();
+            $status_name_result = $status_name_query->get_result();
+            $status_name = $status_name_result->fetch_assoc()['name'] ?? 'Unknown';
+            $status_name_query->close();
+        }
+        
+        // Get old values for logging
+        $old_task = $conn->query("SELECT * FROM tasks WHERE id = $task_id")->fetch_assoc();
+        
+        // Handle NULL due_date and assignee_id properly
+        // Parameters order: title(s), description(s), type(s), priority(s), status_id(i), status(s), [assignee_id(i)], [due_date(s)], task_id(i)
+        
+        if (($new_due_date === null || $new_due_date === '') && $new_assignee_id === null) {
+            // Both NULL: title, description, type, priority, status_id, status, task_id = 7 params
+            $stmt = $conn->prepare("UPDATE tasks SET title=?, description=?, type=?, priority=?, status_id=?, status=?, assignee_id=NULL, due_date=NULL WHERE id=?");
+            $stmt->bind_param("ssssisi", $new_title, $new_description, $new_type, $new_priority, $new_status_id, $status_name, $task_id);
+        } elseif ($new_due_date === null || $new_due_date === '') {
+            // Only due_date is NULL: title, description, type, priority, status_id, status, assignee_id, task_id = 8 params
+            $stmt = $conn->prepare("UPDATE tasks SET title=?, description=?, type=?, priority=?, status_id=?, status=?, assignee_id=?, due_date=NULL WHERE id=?");
+            $stmt->bind_param("ssssisii", $new_title, $new_description, $new_type, $new_priority, $new_status_id, $status_name, $new_assignee_id, $task_id);
+        } elseif ($new_assignee_id === null) {
+            // Only assignee_id is NULL: title, description, type, priority, status_id, status, due_date, task_id = 8 params
+            $stmt = $conn->prepare("UPDATE tasks SET title=?, description=?, type=?, priority=?, status_id=?, status=?, assignee_id=NULL, due_date=? WHERE id=?");
+            $stmt->bind_param("ssssissi", $new_title, $new_description, $new_type, $new_priority, $new_status_id, $status_name, $new_due_date, $task_id);
+        } else {
+            // Both have values: 9 parameters
+            // Order: title(s), description(s), type(s), priority(s), status_id(i), status(s), assignee_id(i), due_date(s), task_id(i)
+            // Type string should be: "ssssissii" where position 7=i (assignee_id), position 8=s (due_date)
+            $stmt = $conn->prepare("UPDATE tasks SET title=?, description=?, type=?, priority=?, status_id=?, status=?, assignee_id=?, due_date=? WHERE id=?");
+            // Parameters: title(s), desc(s), type(s), priority(s), status_id(i), status(s), assignee_id(i), due_date(s), id(i)
+            // Type string: s-s-s-s-i-s-i-s-i = "ssssissii" (9 chars: positions 1-6=ssssis, 7=i for assignee_id, 8=s for due_date, 9=i for task_id)
+            // Correct order: title(s), desc(s), type(s), priority(s), status_id(i), status(s), assignee_id(i), due_date(s), task_id(i)
+            // Fix: assignee_id is integer (i), due_date is string (s)
+            // Type string must be: s-s-s-s-i-s-i-s-i (9 chars: title,desc,type,priority,status_id,status,assignee_id,due_date,task_id)
+            // Current wrong: "ssssissii" has pos7=s(pos7 should be i), pos8=i(pos8 should be s)
+            // Correct: "ssssissii" where pos7=i, pos8=s
+            $typeString = "ssssis" . "i" . "s" . "i"; // Explicitly construct: ssssis + i(assignee) + s(due_date) + i(task_id)
+            $stmt->bind_param($typeString, $new_title, $new_description, $new_type, $new_priority, $new_status_id, $status_name, $new_assignee_id, $new_due_date, $task_id);
+        }
+        
+        if ($stmt->execute()) {
+            // Log changes
+            if ($old_task['title'] != $new_title) {
+                $action = "Title changed";
+                $stmt2 = $conn->prepare("INSERT INTO activity_logs (task_id, user_id, action, old_value, new_value) VALUES (?, ?, ?, ?, ?)");
+                $stmt2->bind_param("iisss", $task_id, $user_id, $action, $old_task['title'], $new_title);
+                $stmt2->execute();
+                $stmt2->close();
+            }
+            
+            if ($old_task['description'] != $new_description) {
+                $action = "Description changed";
+                $stmt2 = $conn->prepare("INSERT INTO activity_logs (task_id, user_id, action) VALUES (?, ?, ?)");
+                $stmt2->bind_param("iis", $task_id, $user_id, $action);
+                $stmt2->execute();
+                $stmt2->close();
+            }
+            
+            if ($old_task['type'] != $new_type) {
+                $action = "Type changed";
+                $stmt2 = $conn->prepare("INSERT INTO activity_logs (task_id, user_id, action, old_value, new_value) VALUES (?, ?, ?, ?, ?)");
+                $stmt2->bind_param("iisss", $task_id, $user_id, $action, $old_task['type'], $new_type);
+                $stmt2->execute();
+                $stmt2->close();
+            }
+            
+            if ($old_task['status_id'] != $new_status_id) {
+                $old_status_name = $old_task['status'] ?? 'Unknown';
+                $action = "Status changed";
+                $stmt2 = $conn->prepare("INSERT INTO activity_logs (task_id, user_id, action, old_value, new_value) VALUES (?, ?, ?, ?, ?)");
+                $stmt2->bind_param("iisss", $task_id, $user_id, $action, $old_status_name, $status_name);
+                $stmt2->execute();
+                $stmt2->close();
+            }
+            
+            if ($old_task['priority'] != $new_priority) {
+                $action = "Priority changed";
+                $stmt2 = $conn->prepare("INSERT INTO activity_logs (task_id, user_id, action, old_value, new_value) VALUES (?, ?, ?, ?, ?)");
+                $stmt2->bind_param("iisss", $task_id, $user_id, $action, $old_task['priority'], $new_priority);
+                $stmt2->execute();
+                $stmt2->close();
+            }
+            
+            if ($old_task['assignee_id'] != $new_assignee_id) {
+                $action = "Assignee changed";
+                $old_name = $old_task['assignee_id'] ? $conn->query("SELECT full_name FROM users WHERE id = " . $old_task['assignee_id'])->fetch_assoc()['full_name'] : 'Unassigned';
+                $new_name = $new_assignee_id ? $conn->query("SELECT full_name FROM users WHERE id = $new_assignee_id")->fetch_assoc()['full_name'] : 'Unassigned';
+                $stmt2 = $conn->prepare("INSERT INTO activity_logs (task_id, user_id, action, old_value, new_value) VALUES (?, ?, ?, ?, ?)");
+                $stmt2->bind_param("iisss", $task_id, $user_id, $action, $old_name, $new_name);
+                $stmt2->execute();
+                $stmt2->close();
+            }
+            
+            if ($old_task['due_date'] != $new_due_date) {
+                $old_due_date_display = $old_task['due_date'] ? formatDate($old_task['due_date']) : 'No due date';
+                $new_due_date_display = $new_due_date ? formatDate($new_due_date) : 'No due date';
+                $action = "Due date changed";
+                $stmt2 = $conn->prepare("INSERT INTO activity_logs (task_id, user_id, action, old_value, new_value) VALUES (?, ?, ?, ?, ?)");
+                $stmt2->bind_param("iisss", $task_id, $user_id, $action, $old_due_date_display, $new_due_date_display);
+                $stmt2->execute();
+                $stmt2->close();
+            }
+            
+            $message = 'Task updated successfully';
+            // Refresh task data
+            $task = $conn->query("
+                SELECT t.*, p.name as project_name, u.full_name as assignee_name, u2.full_name as creator_name,
+                       s.name as status_name, s.color as status_color
+                FROM tasks t
+                LEFT JOIN projects p ON t.project_id = p.id
+                LEFT JOIN users u ON t.assignee_id = u.id
+                LEFT JOIN users u2 ON t.created_by = u2.id
+                LEFT JOIN statuses s ON t.status_id = s.id
+                WHERE t.id = $task_id
+            ")->fetch_assoc();
+        } else {
+            $error = 'Error updating task: ' . $conn->error;
+        }
+        $stmt->close();
+    }
+}
+
 // Handle comment submission
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['add_comment'])) {
     $comment = trim($_POST['comment']);
@@ -318,7 +460,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_priority'])) {
 
 // Handle due date update
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_due_date'])) {
-    $new_due_date = !empty($_POST['due_date']) ? $_POST['due_date'] : null;
+    $new_due_date = !empty($_POST['due_date']) ? trim($_POST['due_date']) : null;
     $old_due_date = $task['due_date'];
     $user_id = $_SESSION['user_id'];
     
@@ -326,29 +468,41 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_due_date'])) {
     $old_due_date_display = $old_due_date ? formatDate($old_due_date) : 'No due date';
     $new_due_date_display = $new_due_date ? formatDate($new_due_date) : 'No due date';
     
-    $stmt = $conn->prepare("UPDATE tasks SET due_date = ? WHERE id = ?");
-    $stmt->bind_param("si", $new_due_date, $task_id);
+    // Handle NULL value properly for MySQL
+    if ($new_due_date === null || $new_due_date === '') {
+        $stmt = $conn->prepare("UPDATE tasks SET due_date = NULL WHERE id = ?");
+        $stmt->bind_param("i", $task_id);
+    } else {
+        $stmt = $conn->prepare("UPDATE tasks SET due_date = ? WHERE id = ?");
+        $stmt->bind_param("si", $new_due_date, $task_id);
+    }
     
     if ($stmt->execute()) {
-        // Log activity
-        $action = "Due date changed";
-        $stmt2 = $conn->prepare("INSERT INTO activity_logs (task_id, user_id, action, old_value, new_value) VALUES (?, ?, ?, ?, ?)");
-        $stmt2->bind_param("iisss", $task_id, $user_id, $action, $old_due_date_display, $new_due_date_display);
-        $stmt2->execute();
+        // Log activity only if date actually changed
+        if ($old_due_date_display != $new_due_date_display) {
+            $action = "Due date changed";
+            $stmt2 = $conn->prepare("INSERT INTO activity_logs (task_id, user_id, action, old_value, new_value) VALUES (?, ?, ?, ?, ?)");
+            $stmt2->bind_param("iisss", $task_id, $user_id, $action, $old_due_date_display, $new_due_date_display);
+            $stmt2->execute();
+            $stmt2->close();
+        }
         
         $message = 'Due date updated successfully';
         // Refresh task data
         $task = $conn->query("
-            SELECT t.*, p.name as project_name, u.full_name as assignee_name, u2.full_name as creator_name
+            SELECT t.*, p.name as project_name, u.full_name as assignee_name, u2.full_name as creator_name,
+                   s.name as status_name, s.color as status_color
             FROM tasks t
             LEFT JOIN projects p ON t.project_id = p.id
             LEFT JOIN users u ON t.assignee_id = u.id
             LEFT JOIN users u2 ON t.created_by = u2.id
+            LEFT JOIN statuses s ON t.status_id = s.id
             WHERE t.id = $task_id
         ")->fetch_assoc();
     } else {
-        $error = 'Error updating due date';
+        $error = 'Error updating due date: ' . $conn->error;
     }
+    $stmt->close();
 }
 
 // Handle "Assign to Me" action
@@ -526,6 +680,66 @@ $activities = $conn->query("
     WHERE a.task_id = $task_id
     ORDER BY a.created_at DESC
 ")->fetch_all(MYSQLI_ASSOC);
+
+// Get all users involved in this ticket (assignee, creator, commenters, activity creators)
+$involved_users = [];
+$involved_user_ids = [];
+
+// Add assignee
+if (!empty($task['assignee_id'])) {
+    $involved_user_ids[] = intval($task['assignee_id']);
+}
+
+// Add creator
+if (!empty($task['created_by'])) {
+    $involved_user_ids[] = intval($task['created_by']);
+}
+
+// Add commenters
+foreach ($comments as $comment) {
+    if (!empty($comment['user_id']) || !empty($comment['user_table_id'])) {
+        $user_id = intval($comment['user_id'] ?? $comment['user_table_id']);
+        if (!in_array($user_id, $involved_user_ids)) {
+            $involved_user_ids[] = $user_id;
+        }
+    }
+    // Add reply commenters
+    if (!empty($comment['replies'])) {
+        foreach ($comment['replies'] as $reply) {
+            if (!empty($reply['user_id']) || !empty($reply['user_table_id'])) {
+                $user_id = intval($reply['user_id'] ?? $reply['user_table_id']);
+                if (!in_array($user_id, $involved_user_ids)) {
+                    $involved_user_ids[] = $user_id;
+                }
+            }
+        }
+    }
+}
+
+// Add activity creators
+foreach ($activities as $activity) {
+    if (!empty($activity['user_id'])) {
+        $user_id = intval($activity['user_id']);
+        if (!in_array($user_id, $involved_user_ids)) {
+            $involved_user_ids[] = $user_id;
+        }
+    }
+}
+
+// Get user details for all involved users
+if (!empty($involved_user_ids)) {
+    $placeholders = implode(',', array_fill(0, count($involved_user_ids), '?'));
+    $involved_query = $conn->prepare("
+        SELECT id, full_name, email 
+        FROM users 
+        WHERE id IN ($placeholders) AND deleted = 0
+        ORDER BY full_name
+    ");
+    $involved_query->bind_param(str_repeat('i', count($involved_user_ids)), ...$involved_user_ids);
+    $involved_query->execute();
+    $involved_users = $involved_query->get_result()->fetch_all(MYSQLI_ASSOC);
+    $involved_query->close();
+}
 
 // Get users for assignee dropdown and @mentions (filtered by organization, excluding deleted users)
 if (isSuperAdmin()) {
@@ -1342,10 +1556,14 @@ include 'includes/header.php';
     background: var(--page-bg);
     min-height: calc(100vh - 60px);
     padding: 0;
+    margin: 0;
+    width: 100%;
+    max-width: 100%;
 }
 
+
 .task-breadcrumb {
-    padding: 12px 24px;
+    padding: 12px 16px;
     background: var(--card-bg);
     border-bottom: 1px solid var(--border-color);
     display: flex;
@@ -1353,6 +1571,15 @@ include 'includes/header.php';
     gap: 8px;
     font-size: 14px;
     color: var(--text-secondary);
+    margin: 0;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+/* Override content-wrapper padding for task view */
+body .content-wrapper:has(.task-view-page) {
+    padding-left: 0 !important;
+    padding-right: 0 !important;
 }
 
 .task-breadcrumb a {
@@ -1485,11 +1712,13 @@ include 'includes/header.php';
 
 .task-content-layout {
     display: grid;
-    grid-template-columns: 320px 1fr;
-    gap: 24px;
-    padding: 24px;
-    max-width: 1400px;
-    margin: 0 auto;
+    grid-template-columns: 1fr 320px;
+    gap: 16px;
+    padding: 16px 0;
+    max-width: 100%;
+    margin: 0;
+    width: 100%;
+    box-sizing: border-box;
 }
 
 .task-details-sidebar {
@@ -1963,6 +2192,7 @@ include 'includes/header.php';
 @media (max-width: 1024px) {
     .task-content-layout {
         grid-template-columns: 1fr;
+        padding: 16px 0;
     }
     
     .comments-activity-section {
@@ -1976,7 +2206,118 @@ include 'includes/header.php';
     <div class="task-breadcrumb">
         <a href="tasks">Tasks</a>
         <span class="task-breadcrumb-separator">/</span>
-        <span><?php echo htmlspecialchars($task['title']); ?></span>
+        <span>#<?php echo htmlspecialchars($task['task_id']); ?></span>
+        
+        <?php 
+        // Get status info for breadcrumb
+        $task_status_id = $task['status_id'] ?? null;
+        $task_status = $task['status'] ?? 'To Do';
+        
+        if ($task_status_id) {
+            $status_info = null;
+            foreach ($statuses as $s) {
+                if ($s['id'] == $task_status_id) {
+                    $status_info = $s;
+                    break;
+                }
+            }
+        } else {
+            $status_info = getStatusByName($task_status, $organization_id);
+        }
+        $status_color = $status_info['color'] ?? '#6c757d';
+        
+        // Get priority info
+        $priority_lower = strtolower($task['priority'] ?? 'low');
+        $priority_icon = 'fa-circle';
+        $priority_color = '#9CA3AF'; // gray for low
+        if ($priority_lower == 'high') {
+            $priority_icon = 'fa-exclamation-circle';
+            $priority_color = '#EF4444'; // red
+        } elseif ($priority_lower == 'medium') {
+            $priority_icon = 'fa-exclamation-triangle';
+            $priority_color = '#F59E0B'; // yellow/orange
+        }
+        
+        // Get assignee initials
+        $assignee_initials = '';
+        if ($task['assignee_name']) {
+            $assignee_initials = getInitials($task['assignee_name']);
+        }
+        ?>
+        
+        <!-- Type Icon -->
+        <span style="margin-left: 12px; display: inline-flex; align-items: center; gap: 6px;">
+            <i class="fas <?php echo $type_icon; ?>" style="color: <?php echo $type_color; ?>; font-size: 14px;" title="<?php echo htmlspecialchars($task['type']); ?>"></i>
+        </span>
+        
+        <!-- Status Circle -->
+        <span style="margin-left: 8px; display: inline-flex; align-items: center; gap: 6px;">
+            <span style="width: 10px; height: 10px; border-radius: 50%; background: <?php echo htmlspecialchars($status_color); ?>; display: inline-block;" title="<?php echo htmlspecialchars($task_status); ?>"></span>
+        </span>
+        
+        <!-- Priority Icon -->
+        <span style="margin-left: 8px; display: inline-flex; align-items: center; gap: 6px;">
+            <i class="fas <?php echo $priority_icon; ?>" style="color: <?php echo $priority_color; ?>; font-size: 14px;" title="<?php echo htmlspecialchars(ucfirst($priority_lower)) . ' Priority'; ?>"></i>
+        </span>
+        
+        <!-- Assignee Icon/Initials -->
+        <?php if ($assignee_initials): ?>
+            <span style="margin-left: 8px; display: inline-flex; align-items: center; gap: 6px;">
+                <span style="width: 32px; height: 32px; border-radius: 50%; background: var(--blue-light); color: var(--blue-dark); display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; border: 2px solid #ffffff; box-shadow: 0 0 0 1px rgba(0,0,0,0.1);" title="<?php echo htmlspecialchars($task['assignee_name']); ?>">
+                    <?php echo htmlspecialchars($assignee_initials); ?>
+                </span>
+            </span>
+        <?php else: ?>
+            <span style="margin-left: 8px; display: inline-flex; align-items: center; gap: 6px;">
+                <i class="fas fa-user-slash" style="color: var(--text-muted); font-size: 14px;" title="Unassigned"></i>
+            </span>
+        <?php endif; ?>
+        
+        <!-- All Involved Users (Creator, Commenters, Activity Creators - Assignee already shown above) -->
+        <?php 
+        // Filter out assignee from involved users since it's already shown
+        $assignee_id = !empty($task['assignee_id']) ? intval($task['assignee_id']) : null;
+        $other_involved = array_filter($involved_users, function($user) use ($assignee_id) {
+            return intval($user['id']) !== $assignee_id;
+        });
+        
+        if (!empty($other_involved)): 
+            $displayed_count = 0;
+            $max_display = 5; // Show max 5 avatars, rest as count
+            $total_others = count($other_involved);
+        ?>
+            <span style="margin-left: 12px; display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap;">
+                <?php foreach ($other_involved as $involved_user): 
+                    if ($displayed_count >= $max_display) break;
+                    
+                    $user_initials = getInitials($involved_user['full_name']);
+                    $displayed_count++;
+                ?>
+                    <span style="width: 24px; height: 24px; border-radius: 50%; background: var(--gray-100); color: var(--text-secondary); display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 600; border: 2px solid #ffffff; margin-left: -4px; cursor: pointer; transition: transform 0.2s; position: relative; box-shadow: 0 0 0 1px rgba(0,0,0,0.1);" 
+                          title="<?php echo htmlspecialchars($involved_user['full_name']); ?>"
+                          onmouseover="this.style.transform='scale(1.15)'; this.style.zIndex='10';"
+                          onmouseout="this.style.transform='scale(1)'; this.style.zIndex='1';">
+                        <?php echo htmlspecialchars($user_initials); ?>
+                    </span>
+                <?php endforeach; ?>
+                
+                <?php if ($total_others > $max_display): ?>
+                    <span style="width: 24px; height: 24px; border-radius: 50%; background: var(--gray-200); color: var(--text-secondary); display: inline-flex; align-items: center; justify-content: center; font-size: 9px; font-weight: 600; border: 2px solid #ffffff; margin-left: -4px; cursor: pointer; position: relative; box-shadow: 0 0 0 1px rgba(0,0,0,0.1);" 
+                          title="<?php echo ($total_others - $max_display); ?> more people involved">
+                        +<?php echo ($total_others - $max_display); ?>
+                    </span>
+                <?php endif; ?>
+            </span>
+        <?php endif; ?>
+        
+        <!-- Save Button (disabled by default, enabled when changes detected) -->
+        <button type="button" id="save-task-btn" onclick="saveAllChanges()" 
+                style="display: inline-flex; margin-left: 16px; padding: 6px 16px; background: var(--text-muted); color: white; border: none; border-radius: 6px; font-size: 13px; font-weight: 500; cursor: not-allowed; align-items: center; gap: 6px; opacity: 0.6;"
+                disabled
+                title="No changes to save">
+            <i class="fas fa-save"></i>
+            <span>Save</span>
+        </button>
     </div>
     
     <!-- Task Header -->
@@ -1984,88 +2325,17 @@ include 'includes/header.php';
        
         
         <!-- Metadata Bar -->
-        <div class="task-metadata-bar">
-            <?php 
-            // Get status info for styling using status_id
-            $task_status_id = $task['status_id'] ?? null;
-            $task_status = $task['status'] ?? 'To Do';
-            
-            // Get status info by ID if available, otherwise by name
-            if ($task_status_id) {
-                $status_info = null;
-                foreach ($statuses as $s) {
-                    if ($s['id'] == $task_status_id) {
-                        $status_info = $s;
-                        break;
-                    }
-                }
-            } else {
-                $status_info = getStatusByName($task_status, $organization_id);
-            }
-            $status_color = $status_info['color'] ?? '#6c757d';
-            
-            $priority_lower = strtolower($task['priority'] ?? '');
-            $priority_class = 'metadata-priority-low';
-            if ($priority_lower == 'high') {
-                $priority_class = 'metadata-priority-high';
-            } elseif ($priority_lower == 'medium') {
-                $priority_class = 'metadata-priority-medium';
-            }
-            ?>
-            <form method="POST" action="" style="display: inline-block; margin: 0;">
-                <input type="hidden" name="update_status" value="1">
-                <select name="status_id" 
-                        onchange="this.form.submit();" 
-                        style="padding: 6px 32px 6px 12px; border: 1px solid var(--border-color); border-radius: 6px; background: <?php echo htmlspecialchars($status_color); ?>; color: white; font-size: 13px; font-weight: 500; cursor: pointer; appearance: none; background-image: url('data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 12 12\'%3E%3Cpath fill=\'%23ffffff\' d=\'M6 9L1 4h10z\'/%3E%3C/svg%3E'); background-repeat: no-repeat; background-position: right 12px center;">
-                    <?php foreach ($statuses as $status_option): ?>
-                        <option value="<?php echo $status_option['id']; ?>" <?php echo ($task_status_id == $status_option['id']) ? 'selected' : ''; ?>>
-                            <?php echo htmlspecialchars($status_option['name']); ?>
-                        </option>
-                    <?php endforeach; ?>
-                </select>
-            </form>
-            <span class="task-metadata-badge <?php echo $priority_class; ?>">
-                <span class="metadata-badge-dot"></span>
-                <?php echo htmlspecialchars($task['priority'] ?? 'Low'); ?> Priority
-            </span>
-            <select name="priority_quick" 
-                    onchange="updateTaskPriority(<?php echo $task['id']; ?>, this.value)"
-                    style="padding: 6px 32px 6px 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--card-bg); color: var(--text-primary); font-size: 13px; cursor: pointer; appearance: none; background-image: url('data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 12 12\'%3E%3Cpath fill=\'%236B7280\' d=\'M6 9L1 4h10z\'/%3E%3C/svg%3E'); background-repeat: no-repeat; background-position: right 12px center;">
-                <option value="Low" <?php echo ($priority_lower == 'low') ? 'selected' : ''; ?>>Low</option>
-                <option value="Medium" <?php echo ($priority_lower == 'medium') ? 'selected' : ''; ?>>Medium</option>
-                <option value="High" <?php echo ($priority_lower == 'high') ? 'selected' : ''; ?>>High</option>
-            </select>
-            <span style="font-size: 13px; color: var(--text-secondary);">
-                <i class="fas fa-calendar" style="margin-right: 6px; color: var(--chart-yellow);"></i>
-                Due Date: <?php echo $task['due_date'] ? date('d-m-Y', strtotime($task['due_date'])) : 'No due date'; ?>
-            </span>
-        </div>
+  
         <div class="task-title-header" style="display: flex; align-items: center; gap: 12px; position: relative;">
-            <div id="task-title-display" style="flex: 1;">
-                <h1 class="task-title-main" id="task-title-text"><?php echo htmlspecialchars($task['title']); ?></h1>
+            <div id="task-title-display" style="flex: 1; cursor: pointer;" onclick="editTitle()" title="Click to edit">
+                <h1 class="task-title-main" id="task-title-text" style="margin: 0;"><?php echo htmlspecialchars($task['title']); ?></h1>
             </div>
             <div id="task-title-edit" style="display: none; flex: 1;">
-                <form method="POST" action="" id="titleEditForm" style="display: flex; align-items: center; gap: 8px;">
-                    <input type="text" name="title" id="task-title-input" value="<?php echo htmlspecialchars($task['title']); ?>" 
-                           style="flex: 1; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 24px; font-weight: 600; font-family: inherit;"
-                           required>
-                    <button type="submit" name="update_title" value="1" 
-                            style="padding: 8px 16px; background: var(--blue); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500;">
-                        <i class="fas fa-check"></i> Save
-                    </button>
-                    <button type="button" onclick="cancelTitleEdit()" 
-                            style="padding: 8px 16px; background: var(--text-muted); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500;">
-                        <i class="fas fa-times"></i> Cancel
-                    </button>
-                </form>
+                <input type="text" id="task-title-input" value="<?php echo htmlspecialchars($task['title']); ?>" 
+                       onblur="cancelTitleEdit()" onkeydown="handleTitleKeydown(event)"
+                       style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 24px; font-weight: 600; font-family: inherit;"
+                       required>
             </div>
-            <button type="button" onclick="editTitle()" 
-                    style="background: none; border: none; color: var(--text-muted); cursor: pointer; padding: 8px; border-radius: 4px; transition: all 0.2s;"
-                    onmouseover="this.style.background='var(--blue-light)'; this.style.color='var(--blue)'"
-                    onmouseout="this.style.background='none'; this.style.color='var(--text-muted)'"
-                    title="Edit Title">
-                <i class="fas fa-edit" style="font-size: 16px;"></i>
-            </button>
         </div>
     </div>
 
@@ -2079,136 +2349,7 @@ include 'includes/header.php';
 
     <!-- Main Content Layout -->
     <div class="task-content-layout">
-        <!-- Left Sidebar: Task Details -->
-        <div class="task-details-sidebar">
-            <!-- Due Date Card -->
-            <div class="task-details-card-new">
-                <h4>Due Date</h4>
-                <div class="detail-item">
-                    <i class="fas fa-calendar detail-item-icon" style="color: var(--chart-yellow);"></i>
-                    <div class="detail-item-content">
-                        <div class="detail-item-value">
-                            <?php echo $task['due_date'] ? date('d-m-Y', strtotime($task['due_date'])) : 'No due date'; ?>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- Assignee Card -->
-            <div class="task-details-card-new">
-                <h4>Assignee</h4>
-                <div class="detail-item">
-                    <?php if ($task['assignee_name']): 
-                        $assignee_initials = getInitials($task['assignee_name']);
-                        // Get user role
-                        $assignee_role = 'Team Member';
-                        if ($task['assignee_id']) {
-                            $role_conn = getDBConnection();
-                            $role_query = $role_conn->query("SELECT r.name FROM users u JOIN roles r ON u.role_id = r.id WHERE u.id = {$task['assignee_id']}");
-                            if ($role_query && $role_row = $role_query->fetch_assoc()) {
-                                $assignee_role = $role_row['name'];
-                            }
-                            $role_conn->close();
-                        }
-                    ?>
-                        <div class="assignee-display" style="width: 100%;">
-                            <div class="assignee-avatar-large">
-                                <?php echo htmlspecialchars($assignee_initials); ?>
-                            </div>
-                            <div class="assignee-info">
-                                <div class="assignee-name"><?php echo htmlspecialchars($task['assignee_name']); ?></div>
-                                <div class="assignee-role"><?php echo htmlspecialchars($assignee_role); ?></div>
-                            </div>
-                        </div>
-                        <?php if (isAdmin() || isProjectManager()): ?>
-                            <form method="POST" action="" style="margin-top: 8px;">
-                                <select name="assignee_id" onchange="this.form.submit()" 
-                                        style="width: 100%; padding: 6px 10px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 13px; background: var(--card-bg); color: var(--text-primary);">
-                                    <option value="">Change Assignee</option>
-                                    <?php foreach ($users_list as $user): ?>
-                                        <option value="<?php echo $user['id']; ?>" <?php echo ($task['assignee_id'] == $user['id']) ? 'selected' : ''; ?>>
-                                            <?php echo htmlspecialchars($user['full_name']); ?>
-                                        </option>
-                                    <?php endforeach; ?>
-                                </select>
-                                <input type="hidden" name="update_assignee" value="1">
-                            </form>
-                        <?php endif; ?>
-                    <?php else: ?>
-                        <div class="detail-item-value" style="color: var(--text-muted);">
-                            <i class="fas fa-user-slash" style="margin-right: 6px;"></i>
-                            Unassigned
-                        </div>
-                        <?php if (isAdmin() || isProjectManager()): ?>
-                            <form method="POST" action="" style="margin-top: 8px;">
-                                <select name="assignee_id" onchange="this.form.submit()" 
-                                        style="width: 100%; padding: 6px 10px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 13px; background: var(--card-bg); color: var(--text-primary);">
-                                    <option value="">Assign to...</option>
-                                    <?php foreach ($users_list as $user): ?>
-                                        <option value="<?php echo $user['id']; ?>">
-                                            <?php echo htmlspecialchars($user['full_name']); ?>
-                                        </option>
-                                    <?php endforeach; ?>
-                                </select>
-                                <input type="hidden" name="update_assignee" value="1">
-                            </form>
-                        <?php endif; ?>
-                    <?php endif; ?>
-                </div>
-            </div>
-            
-            <!-- Subtasks Card -->
-            <div class="task-details-card-new">
-                <h4>Subtasks</h4>
-                <div class="subtasks-section">
-                    <?php 
-                    // Check if subtasks table exists and fetch real subtasks
-                    $subtasks_conn = getDBConnection();
-                    $subtasks_table_exists = false;
-                    $subtasks = [];
-                    
-                    // Check if table exists
-                    $table_check = $subtasks_conn->query("SHOW TABLES LIKE 'task_subtasks'");
-                    if ($table_check && $table_check->num_rows > 0) {
-                        $subtasks_table_exists = true;
-                        $subtasks_query = $subtasks_conn->prepare("SELECT id, title, completed FROM task_subtasks WHERE task_id = ? ORDER BY created_at ASC");
-                        if ($subtasks_query) {
-                            $subtasks_query->bind_param("i", $task_id);
-                            $subtasks_query->execute();
-                            $subtasks_result = $subtasks_query->get_result();
-                            $subtasks = $subtasks_result->fetch_all(MYSQLI_ASSOC);
-                            $subtasks_query->close();
-                        }
-                    }
-                    $subtasks_conn->close();
-                    ?>
-                    <?php if (empty($subtasks)): ?>
-                        <div style="padding: 16px 0; text-align: center; color: var(--text-muted); font-size: 13px;">
-                            <i class="fas fa-tasks" style="font-size: 24px; margin-bottom: 8px; opacity: 0.3;"></i>
-                            <p style="margin: 0;">No subtasks yet</p>
-                        </div>
-                    <?php else: ?>
-                        <?php foreach ($subtasks as $subtask): ?>
-                            <div class="subtask-item">
-                                <input type="checkbox" class="subtask-checkbox" <?php echo !empty($subtask['completed']) ? 'checked' : ''; ?> 
-                                       onchange="updateSubtask(<?php echo $subtask['id']; ?>, this.checked)">
-                                <span class="subtask-text <?php echo !empty($subtask['completed']) ? 'completed' : ''; ?>">
-                                    <?php echo htmlspecialchars($subtask['title']); ?>
-                                </span>
-                            </div>
-                        <?php endforeach; ?>
-                    <?php endif; ?>
-                    <?php if (isAdmin() || isProjectManager() || $task['assignee_id'] == $_SESSION['user_id']): ?>
-                        <button class="add-subtask-btn" onclick="addNewSubtask()">
-                            <i class="fas fa-plus"></i>
-                            <span>Add subtask</span>
-                        </button>
-                    <?php endif; ?>
-                </div>
-            </div>
-        </div>
-        
-        <!-- Right Column: Main Content -->
+        <!-- Left Column: Main Content -->
         <div class="task-main-content-new">
             <!-- Main Tabs -->
             <div style="background: var(--card-bg); border-radius: 10px; border: 1px solid var(--border-color); box-shadow: 0 1px 3px var(--shadow);">
@@ -2232,75 +2373,69 @@ include 'includes/header.php';
                     <div class="task-description-section" style="position: relative;">
                         <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;">
                             <h3 style="font-size: 16px; font-weight: 600; color: var(--text-primary); margin: 0;">Description</h3>
-                            <button type="button" onclick="editDescription()" 
-                                    style="background: none; border: none; color: var(--text-muted); cursor: pointer; padding: 6px 12px; border-radius: 4px; transition: all 0.2s; display: flex; align-items: center; gap: 6px; font-size: 14px;"
-                                    onmouseover="this.style.background='var(--blue-light)'; this.style.color='var(--blue)'"
-                                    onmouseout="this.style.background='none'; this.style.color='var(--text-muted)'"
-                                    id="edit-description-btn">
-                                <i class="fas fa-edit" style="font-size: 14px;"></i>
-                                <span>Edit</span>
-                            </button>
                         </div>
-                        <div id="task-description-display" class="task-description-text">
+                        <div id="task-description-display" class="task-description-text" onclick="editDescription()" style="cursor: pointer; min-height: 100px; padding: 12px; border: 1px dashed transparent; border-radius: 6px; transition: all 0.2s;" 
+                             onmouseover="this.style.borderColor='var(--border-color)'; this.style.background='var(--page-bg)'"
+                             onmouseout="this.style.borderColor='transparent'; this.style.background='transparent'"
+                             title="Click to edit">
                             <?php
                             $description = trim($task['description'] ?? '');
                             if ($description === '') {
-                                echo '<p style="color: var(--text-muted); font-style: italic;">No description provided</p>';
+                                echo '<p style="color: var(--text-muted); font-style: italic; margin: 0;">Click to add description</p>';
                             } else {
                                 echo renderRichText($description);
                             }
                             ?>
                         </div>
                         <div id="task-description-edit" style="display: none;">
-                            <form method="POST" action="" id="descriptionEditForm">
-                                <textarea name="description" id="task-description-editor" 
-                                          style="width: 100%; min-height: 300px; padding: 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; font-family: inherit; resize: vertical;">
-                                    <?php echo htmlspecialchars($task['description'] ?? ''); ?>
-                                </textarea>
-                                <div style="display: flex; gap: 8px; margin-top: 12px; justify-content: flex-end;">
-                                    <button type="submit" name="update_description" value="1" 
-                                            style="padding: 10px 20px; background: var(--blue); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500;">
-                                        <i class="fas fa-check"></i> Save
-                                    </button>
-                                    <button type="button" onclick="cancelDescriptionEdit()" 
-                                            style="padding: 10px 20px; background: var(--text-muted); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500;">
-                                        <i class="fas fa-times"></i> Cancel
-                                    </button>
-                                </div>
-                            </form>
+                            <div id="task-description-editor" style="min-height: 400px;">
+                                <?php echo $task['description'] ?? ''; ?>
+                            </div>
                         </div>
                     </div>
                 </div>
                 
                 <!-- Tab Content: Activity -->
                 <div id="main-tab-activity" class="tab-content" style="display: none; padding: 24px;">
-                    <div class="activity-section">
+                    <div class="activity-panel">
+                        <div class="activity-panel-header">
+                            <h3 class="activity-panel-title">Activity Log</h3>
+                        </div>
                         <div class="activity-list">
                             <?php if (empty($activities)): ?>
-                                <div class="no-activity">
-                                    <i class="fas fa-history" style="font-size: 32px; margin-bottom: 12px; opacity: 0.3;"></i>
-                                    <p>No activity recorded yet.</p>
+                                <div style="text-align: center; padding: 30px; color: var(--text-muted); font-size: 13px;">
+                                    <i class="fas fa-history" style="font-size: 24px; margin-bottom: 8px; opacity: 0.3;"></i>
+                                    <p>No activity yet</p>
                                 </div>
                             <?php else: ?>
-                                <?php foreach ($activities as $activity): 
-                                    $activity_initials = getInitials($activity['user_name']);
-                                ?>
+                                <?php foreach ($activities as $activity): ?>
                                     <div class="activity-item-new">
                                         <div class="activity-avatar">
-                                            <?php echo htmlspecialchars($activity_initials); ?>
+                                            <?php
+                                            $activity_user_name = $activity['user_name'] ?? 'Unknown';
+                                            $activity_initials = getInitials($activity_user_name);
+                                            ?>
+                                            <span><?php echo htmlspecialchars($activity_initials); ?></span>
                                         </div>
                                         <div class="activity-content">
-                                            <div class="activity-text">
-                                                <strong><?php echo htmlspecialchars($activity['user_name']); ?></strong> 
-                                                <?php echo htmlspecialchars($activity['action']); ?>
-                                                <?php if ($activity['old_value'] && $activity['new_value']): ?>
-                                                    from <strong><?php echo htmlspecialchars($activity['old_value']); ?></strong> 
-                                                    to <strong><?php echo htmlspecialchars($activity['new_value']); ?></strong>
-                                                <?php endif; ?>
+                                            <div class="activity-header">
+                                                <span class="activity-user"><?php echo htmlspecialchars($activity_user_name); ?></span>
+                                                <span class="activity-action"><?php echo htmlspecialchars($activity['action']); ?></span>
+                                                <span class="activity-time"><?php echo formatDate($activity['created_at']); ?></span>
                                             </div>
-                                            <div class="activity-time">
-                                                <?php echo formatDateTime($activity['created_at']); ?>
-                                            </div>
+                                            <?php if (!empty($activity['old_value']) || !empty($activity['new_value'])): ?>
+                                                <div class="activity-details">
+                                                    <?php if (!empty($activity['old_value'])): ?>
+                                                        <span class="activity-old"><?php echo htmlspecialchars($activity['old_value']); ?></span>
+                                                    <?php endif; ?>
+                                                    <?php if (!empty($activity['old_value']) && !empty($activity['new_value'])): ?>
+                                                        <i class="fas fa-arrow-right" style="margin: 0 8px; color: var(--text-muted);"></i>
+                                                    <?php endif; ?>
+                                                    <?php if (!empty($activity['new_value'])): ?>
+                                                        <span class="activity-new"><?php echo htmlspecialchars($activity['new_value']); ?></span>
+                                                    <?php endif; ?>
+                                                </div>
+                                            <?php endif; ?>
                                         </div>
                                     </div>
                                 <?php endforeach; ?>
@@ -2311,46 +2446,48 @@ include 'includes/header.php';
                 
                 <!-- Tab Content: Attachments -->
                 <div id="main-tab-attachments" class="tab-content" style="display: none; padding: 24px;">
-                    <?php 
-                    // Reuse attachments data from nested tab
-                    if (empty($attachments)): 
-                    ?>
-                        <div style="padding: 40px 20px; text-align: center; color: var(--text-muted);">
-                            <i class="fas fa-paperclip" style="font-size: 48px; margin-bottom: 16px; opacity: 0.3;"></i>
-                            <p style="margin: 0; font-size: 16px;">No attachments</p>
+                    <div class="attachments-panel">
+                        <div class="attachments-panel-header">
+                            <h3 class="attachments-panel-title">Attachments</h3>
                         </div>
-                    <?php else: ?>
-                        <div class="attachments-grid">
-                            <?php foreach ($attachments as $attachment): 
-                                $file_icon = getFileIcon($attachment['mime_type'] ?? '', $attachment['filename']);
-                                $file_size = formatFileSize($attachment['file_size'] ?? 0);
-                                $file_date = date('d-m-Y, H:i A', strtotime($attachment['created_at']));
-                            ?>
-                                <div class="attachment-card" onclick="window.open('<?php echo htmlspecialchars($attachment['file_path']); ?>', '_blank');">
-                                    <div class="attachment-preview">
-                                        <i class="fas <?php echo $file_icon; ?>"></i>
-                                    </div>
-                                    <div class="attachment-info">
-                                        <div class="attachment-name" title="<?php echo htmlspecialchars($attachment['filename']); ?>">
-                                            <?php echo htmlspecialchars($attachment['filename']); ?>
-                                        </div>
-                                        <div class="attachment-meta">
-                                            <?php echo $file_date; ?> | <?php echo $file_size; ?>
-                                        </div>
-                                    </div>
+                        <div class="attachments-list">
+                            <?php if (empty($attachments)): ?>
+                                <div style="text-align: center; padding: 30px; color: var(--text-muted); font-size: 13px;">
+                                    <i class="fas fa-paperclip" style="font-size: 24px; margin-bottom: 8px; opacity: 0.3;"></i>
+                                    <p>No attachments yet</p>
                                 </div>
-                            <?php endforeach; ?>
+                            <?php else: ?>
+                                <?php foreach ($attachments as $attachment): ?>
+                                    <div class="attachment-item">
+                                        <i class="fas <?php echo getFileIcon($attachment['mime_type'], $attachment['filename']); ?>" style="margin-right: 10px; color: var(--text-secondary);"></i>
+                                        <a href="<?php echo htmlspecialchars($attachment['file_path']); ?>" target="_blank" style="color: var(--blue); text-decoration: none;">
+                                            <?php echo htmlspecialchars($attachment['filename']); ?>
+                                        </a>
+                                        <span style="color: var(--text-muted); font-size: 12px; margin-left: auto;">
+                                            <?php echo formatFileSize($attachment['file_size']); ?>
+                                        </span>
+                                    </div>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
                         </div>
-                    <?php endif; ?>
+                    </div>
                 </div>
                 
                 <!-- Tab Content: Time Log -->
                 <div id="main-tab-timelog" class="tab-content" style="display: none; padding: 24px;">
-                    <p style="color: var(--text-muted);">No time logged</p>
+                    <div class="timelog-panel">
+                        <div class="timelog-panel-header">
+                            <h3 class="timelog-panel-title">Time Log</h3>
+                        </div>
+                        <div class="timelog-list">
+                            <div style="text-align: center; padding: 30px; color: var(--text-muted); font-size: 13px;">
+                                <i class="fas fa-clock" style="font-size: 24px; margin-bottom: 8px; opacity: 0.3;"></i>
+                                <p>Time logging feature coming soon</p>
+                            </div>
+                        </div>
+                    </div>
                 </div>
-            </div>
-
-            <!-- Comments and Activity Section -->
+                 <!-- Comments and Activity Section -->
             <div class="comments-activity-section">
                 <!-- Left: Comments Panel -->
                 <div class="comments-panel">
@@ -2444,8 +2581,171 @@ include 'includes/header.php';
                 
                
             </div>
+            </div>
+              <!-- Right Sidebar: Task Details -->
+        <div class="task-details-sidebar">
+            <!-- Task Details Card: Type, Status, Priority, Due Date, Assignee -->
+            <form method="POST" action="" id="taskUpdateForm">
+                <input type="hidden" name="update_task" value="1">
+                <input type="hidden" name="task_id" value="<?php echo $task['id']; ?>">
+                
+                <div class="task-details-card-new">
+                    <?php 
+                    // Get status info for styling using status_id
+                    $task_status_id = $task['status_id'] ?? null;
+                    $task_status = $task['status'] ?? 'To Do';
+                    
+                    // Get status info by ID if available, otherwise by name
+                    if ($task_status_id) {
+                        $status_info = null;
+                        foreach ($statuses as $s) {
+                            if ($s['id'] == $task_status_id) {
+                                $status_info = $s;
+                                break;
+                            }
+                        }
+                    } else {
+                        $status_info = getStatusByName($task_status, $organization_id);
+                    }
+                    $status_color = $status_info['color'] ?? '#6c757d';
+                    
+                    $priority_lower = strtolower($task['priority'] ?? '');
+                    ?>
+                    
+                    <!-- Type -->
+                    <div class="detail-item" style="display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border-color);">
+                        <label style="font-weight: 600; color: var(--text-primary); font-size: 13px; margin: 0; white-space: nowrap; min-width: 100px;">
+                            <i class="fas <?php echo $type_icon; ?>" style="color: <?php echo $type_color; ?>; margin-right: 6px;"></i>Type
+                        </label>
+                        <select name="type" id="task-type" onchange="markChanged()"
+                                style="flex: 1; padding: 6px 10px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--card-bg); color: var(--text-primary); font-size: 13px; cursor: pointer; appearance: none; background-image: url('data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 12 12\'%3E%3Cpath fill=\'%236B7280\' d=\'M6 9L1 4h10z\'/%3E%3C/svg%3E'); background-repeat: no-repeat; background-position: right 12px center;">
+                            <option value="Task" <?php echo ($task['type'] == 'Task') ? 'selected' : ''; ?>>Task</option>
+                            <option value="Bug" <?php echo ($task['type'] == 'Bug') ? 'selected' : ''; ?>>Bug</option>
+                            <option value="Improvement" <?php echo ($task['type'] == 'Improvement') ? 'selected' : ''; ?>>Improvement</option>
+                        </select>
+                    </div>
+                    
+                    <!-- Status -->
+                    <div class="detail-item" style="display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border-color);">
+                        <label style="font-weight: 600; color: var(--text-primary); font-size: 13px; margin: 0; white-space: nowrap; min-width: 100px;">
+                            <i class="fas fa-flag" style="color: <?php echo htmlspecialchars($status_color); ?>; margin-right: 6px;"></i>Status
+                        </label>
+                        <select name="status_id" id="task-status" onchange="updateStatusColor(); markChanged();"
+                                style="flex: 1; padding: 6px 10px; border: 1px solid var(--border-color); border-radius: 6px; background: <?php echo htmlspecialchars($status_color); ?>; color: white; font-size: 13px; font-weight: 500; cursor: pointer; appearance: none; background-image: url('data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 12 12\'%3E%3Cpath fill=\'%23ffffff\' d=\'M6 9L1 4h10z\'/%3E%3C/svg%3E'); background-repeat: no-repeat; background-position: right 12px center;">
+                            <?php foreach ($statuses as $status_option): ?>
+                                <option value="<?php echo $status_option['id']; ?>" data-color="<?php echo htmlspecialchars($status_option['color'] ?? '#6c757d'); ?>" <?php echo ($task_status_id == $status_option['id']) ? 'selected' : ''; ?>>
+                                    <?php echo htmlspecialchars($status_option['name']); ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    
+                    <!-- Priority -->
+                    <div class="detail-item" style="display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border-color);">
+                        <label style="font-weight: 600; color: var(--text-primary); font-size: 13px; margin: 0; white-space: nowrap; min-width: 100px;">
+                            <i class="fas fa-exclamation-circle" style="color: var(--chart-yellow); margin-right: 6px;"></i>Priority
+                        </label>
+                        <select name="priority" id="task-priority" onchange="markChanged()"
+                                style="flex: 1; padding: 6px 10px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--card-bg); color: var(--text-primary); font-size: 13px; cursor: pointer; appearance: none; background-image: url('data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 12 12\'%3E%3Cpath fill=\'%236B7280\' d=\'M6 9L1 4h10z\'/%3E%3C/svg%3E'); background-repeat: no-repeat; background-position: right 12px center;">
+                            <option value="Low" <?php echo ($priority_lower == 'low') ? 'selected' : ''; ?>>Low</option>
+                            <option value="Medium" <?php echo ($priority_lower == 'medium') ? 'selected' : ''; ?>>Medium</option>
+                            <option value="High" <?php echo ($priority_lower == 'high') ? 'selected' : ''; ?>>High</option>
+                        </select>
+                    </div>
+                    
+                    <!-- Due Date -->
+                    <div class="detail-item" style="display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border-color);">
+                        <label style="font-weight: 600; color: var(--text-primary); font-size: 13px; margin: 0; white-space: nowrap; min-width: 100px;">
+                            <i class="fas fa-calendar" style="color: var(--chart-yellow); margin-right: 6px;"></i>Due Date
+                        </label>
+                        <?php if (isAdmin() || isProjectManager() || $task['assignee_id'] == $_SESSION['user_id']): ?>
+                            <div style="display: flex; align-items: center; gap: 8px; flex: 1;">
+                                <input type="date" name="due_date" id="task-due-date" onchange="markChanged()"
+                                       value="<?php echo $task['due_date'] ? date('Y-m-d', strtotime($task['due_date'])) : ''; ?>" 
+                                       style="flex: 1; padding: 6px 10px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 13px; background: var(--card-bg); color: var(--text-primary);">
+                                <?php if ($task['due_date']): ?>
+                                    <button type="button" onclick="clearDueDateField()" 
+                                            style="padding: 4px 8px; background: var(--text-muted); color: white; border: none; border-radius: 4px; font-size: 11px; cursor: pointer; white-space: nowrap;"
+                                            title="Clear Due Date">
+                                        <i class="fas fa-times"></i>
+                                    </button>
+                                <?php endif; ?>
+                            </div>
+                        <?php else: ?>
+                            <span style="color: var(--text-secondary); font-size: 13px; flex: 1;">
+                                <?php echo $task['due_date'] ? date('d-m-Y', strtotime($task['due_date'])) : 'No due date'; ?>
+                            </span>
+                        <?php endif; ?>
+                    </div>
+                    
+                    <!-- Assignee -->
+                    <div class="detail-item" style="display: flex; align-items: center; gap: 12px; padding: 12px 0;">
+                        <label style="font-weight: 600; color: var(--text-primary); font-size: 13px; margin: 0; white-space: nowrap; min-width: 100px;">
+                            <i class="fas fa-user" style="color: var(--blue); margin-right: 6px;"></i>Assignee
+                        </label>
+                        <?php if ($task['assignee_name']): 
+                            $assignee_initials = getInitials($task['assignee_name']);
+                            // Get user role
+                            $assignee_role = 'Team Member';
+                            if ($task['assignee_id']) {
+                                $role_conn = getDBConnection();
+                                $role_query = $role_conn->query("SELECT r.name FROM users u JOIN roles r ON u.role_id = r.id WHERE u.id = {$task['assignee_id']}");
+                                if ($role_query && $role_row = $role_query->fetch_assoc()) {
+                                    $assignee_role = $role_row['name'];
+                                }
+                                $role_conn->close();
+                            }
+                        ?>
+                            <?php if (isAdmin() || isProjectManager()): ?>
+                                <select name="assignee_id" id="task-assignee" onchange="markChanged()"
+                                        style="flex: 1; padding: 6px 10px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 13px; background: var(--card-bg); color: var(--text-primary);">
+                                    <option value="">Change Assignee</option>
+                                    <?php foreach ($users_list as $user): ?>
+                                        <option value="<?php echo $user['id']; ?>" <?php echo ($task['assignee_id'] == $user['id']) ? 'selected' : ''; ?>>
+                                            <?php echo htmlspecialchars($user['full_name']); ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            <?php else: ?>
+                                <div style="flex: 1; display: flex; align-items: center; gap: 10px;">
+                                    <div class="assignee-avatar-large">
+                                        <?php echo htmlspecialchars($assignee_initials); ?>
+                                    </div>
+                                    <div class="assignee-info">
+                                        <div class="assignee-name"><?php echo htmlspecialchars($task['assignee_name']); ?></div>
+                                        <div class="assignee-role"><?php echo htmlspecialchars($assignee_role); ?></div>
+                                    </div>
+                                </div>
+                            <?php endif; ?>
+                        <?php else: ?>
+                            <?php if (isAdmin() || isProjectManager()): ?>
+                                <select name="assignee_id" id="task-assignee" onchange="markChanged()"
+                                        style="flex: 1; padding: 6px 10px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 13px; background: var(--card-bg); color: var(--text-primary);">
+                                    <option value="">Assign to...</option>
+                                    <?php foreach ($users_list as $user): ?>
+                                        <option value="<?php echo $user['id']; ?>">
+                                            <?php echo htmlspecialchars($user['full_name']); ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            <?php else: ?>
+                                <span style="color: var(--text-muted); font-size: 13px; flex: 1;">
+                                    <i class="fas fa-user-slash" style="margin-right: 6px;"></i>Unassigned
+                                </span>
+                            <?php endif; ?>
+                        <?php endif; ?>
+                    </div>
+                </div>
+            </form>
+            
+           
         </div>
-    </div>
+        </div>
+        
+      
+        
+      
+       
 </div>
 
 <script>
@@ -2542,23 +2842,34 @@ function switchCommentsTab(tabName) {
     }
 }
 
-// Update task priority
+// Update task priority (now just marks as changed, doesn't submit)
 function updateTaskPriority(taskId, priority) {
-    const form = document.createElement('form');
-    form.method = 'POST';
-    form.action = '';
-    const updateInput = document.createElement('input');
-    updateInput.type = 'hidden';
-    updateInput.name = 'update_priority';
-    updateInput.value = '1';
-    form.appendChild(updateInput);
-    const priorityInput = document.createElement('input');
-    priorityInput.type = 'hidden';
-    priorityInput.name = 'priority';
-    priorityInput.value = priority;
-    form.appendChild(priorityInput);
-    document.body.appendChild(form);
-    form.submit();
+    const prioritySelect = document.getElementById('task-priority');
+    if (prioritySelect) {
+        prioritySelect.value = priority;
+        markChanged();
+    }
+}
+
+// Clear due date
+function clearDueDate() {
+    if (confirm('Are you sure you want to clear the due date?')) {
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.action = '';
+        const updateInput = document.createElement('input');
+        updateInput.type = 'hidden';
+        updateInput.name = 'update_due_date';
+        updateInput.value = '1';
+        form.appendChild(updateInput);
+        const dueDateInput = document.createElement('input');
+        dueDateInput.type = 'hidden';
+        dueDateInput.name = 'due_date';
+        dueDateInput.value = '';
+        form.appendChild(dueDateInput);
+        document.body.appendChild(form);
+        form.submit();
+    }
 }
 
 // Update subtask
@@ -2795,21 +3106,249 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>
 
 <script src="https://cdn.ckeditor.com/ckeditor5/41.3.1/classic/ckeditor.js"></script>
+<script src="https://cdn.ckeditor.com/ckeditor5/41.3.1/classic/translations/en.js"></script>
 <script>
 // CKEditor instance for description
 let descriptionEditor = null;
+
+// Custom Upload Adapter for CKEditor
+class CustomUploadAdapter {
+    constructor(loader) {
+        this.loader = loader;
+    }
+
+    upload() {
+        return this.loader.file
+            .then(file => new Promise((resolve, reject) => {
+                const formData = new FormData();
+                formData.append('upload', file);
+
+                fetch('upload.php', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => response.json())
+                .then(result => {
+                    if (result.url) {
+                        resolve({ default: result.url });
+                    } else {
+                        reject(result.error?.message || 'Upload failed');
+                    }
+                })
+                .catch(error => {
+                    reject('Upload failed: ' + error.message);
+                });
+            }));
+    }
+
+    abort() {
+        // Abort upload if needed
+    }
+}
+
+// Store original values
+let originalValues = {
+    title: '',
+    description: '',
+    type: '',
+    status_id: '',
+    priority: '',
+    assignee_id: '',
+    due_date: ''
+};
+
+// Initialize original values on page load
+document.addEventListener('DOMContentLoaded', function() {
+    const titleText = document.getElementById('task-title-text');
+    const descriptionDisplay = document.getElementById('task-description-display');
+    const typeSelect = document.getElementById('task-type');
+    const statusSelect = document.getElementById('task-status');
+    const prioritySelect = document.getElementById('task-priority');
+    const assigneeSelect = document.getElementById('task-assignee');
+    const dueDateInput = document.getElementById('task-due-date');
+    
+    if (titleText) originalValues.title = titleText.textContent.trim();
+    if (descriptionDisplay) {
+        const descText = descriptionDisplay.textContent.trim();
+        originalValues.description = descText === 'Click to add description' ? '' : descText;
+    }
+    if (typeSelect) originalValues.type = typeSelect.value;
+    if (statusSelect) originalValues.status_id = statusSelect.value;
+    if (prioritySelect) originalValues.priority = prioritySelect.value;
+    if (assigneeSelect) originalValues.assignee_id = assigneeSelect ? assigneeSelect.value : '';
+    if (dueDateInput) originalValues.due_date = dueDateInput.value;
+    
+    // Add change listeners
+    if (typeSelect) typeSelect.addEventListener('change', checkForChanges);
+    if (statusSelect) statusSelect.addEventListener('change', function() { updateStatusColor(); checkForChanges(); });
+    if (prioritySelect) prioritySelect.addEventListener('change', checkForChanges);
+    if (assigneeSelect) assigneeSelect.addEventListener('change', checkForChanges);
+    if (dueDateInput) dueDateInput.addEventListener('change', checkForChanges);
+    
+    // Add input listeners for title
+    const titleInput = document.getElementById('task-title-input');
+    if (titleInput) {
+        titleInput.addEventListener('input', checkForChanges);
+    }
+});
+
+// Mark that changes have been made
+function markChanged() {
+    const saveBtn = document.getElementById('save-task-btn');
+    if (saveBtn) {
+        saveBtn.disabled = false;
+        saveBtn.style.background = 'var(--blue)';
+        saveBtn.style.cursor = 'pointer';
+        saveBtn.style.opacity = '1';
+        saveBtn.title = 'Save all changes';
+    }
+}
+
+// Check if values have actually changed
+function checkForChanges() {
+    const saveBtn = document.getElementById('save-task-btn');
+    if (!saveBtn) return;
+    
+    // Get current values
+    const titleInput = document.getElementById('task-title-input');
+    const titleDisplay = document.getElementById('task-title-text');
+    const currentTitle = titleInput && window.getComputedStyle(titleInput.parentElement).display !== 'none' 
+        ? titleInput.value.trim() 
+        : (titleDisplay ? titleDisplay.textContent.trim() : '');
+    
+    const descEditor = document.getElementById('task-description-editor');
+    const descDisplay = document.getElementById('task-description-display');
+    let currentDesc = '';
+    if (descriptionEditor && window.getComputedStyle(document.getElementById('task-description-edit')).display !== 'none') {
+        currentDesc = descriptionEditor.getData().trim();
+    } else if (descDisplay) {
+        const currentHtml = descDisplay.innerHTML.trim();
+        if (currentHtml && !currentHtml.includes('Click to add description')) {
+            currentDesc = currentHtml;
+        }
+    }
+    
+    const typeSelect = document.getElementById('task-type');
+    const statusSelect = document.getElementById('task-status');
+    const prioritySelect = document.getElementById('task-priority');
+    const assigneeSelect = document.getElementById('task-assignee');
+    const dueDateInput = document.getElementById('task-due-date');
+    
+    // Compare with original values
+    const hasChanges = 
+        (currentTitle !== originalValues.title) ||
+        (currentDesc !== originalValues.description) ||
+        (typeSelect && typeSelect.value !== originalValues.type) ||
+        (statusSelect && statusSelect.value !== originalValues.status_id) ||
+        (prioritySelect && prioritySelect.value !== originalValues.priority) ||
+        (assigneeSelect && assigneeSelect.value !== originalValues.assignee_id) ||
+        (dueDateInput && dueDateInput.value !== originalValues.due_date);
+    
+    if (hasChanges) {
+        markChanged();
+    } else {
+        saveBtn.disabled = true;
+        saveBtn.style.background = 'var(--text-muted)';
+        saveBtn.style.cursor = 'not-allowed';
+        saveBtn.style.opacity = '0.6';
+        saveBtn.title = 'No changes to save';
+    }
+}
+
+// Update status color when status changes
+function updateStatusColor() {
+    const statusSelect = document.getElementById('task-status');
+    if (statusSelect) {
+        const selectedOption = statusSelect.options[statusSelect.selectedIndex];
+        const color = selectedOption.getAttribute('data-color') || '#6c757d';
+        statusSelect.style.background = color;
+    }
+}
+
+// Save all changes
+function saveAllChanges() {
+    const form = document.getElementById('taskUpdateForm');
+    if (!form) return;
+    
+    // Get title value
+    const titleInput = document.getElementById('task-title-input');
+    const titleDisplay = document.getElementById('task-title-text');
+    let titleValue = '';
+    
+    if (titleInput && window.getComputedStyle(titleInput.parentElement).display !== 'none') {
+        // Title is in edit mode
+        titleValue = titleInput.value.trim();
+    } else if (titleDisplay) {
+        // Title is in display mode, use current value
+        titleValue = titleDisplay.textContent.trim();
+    }
+    
+    if (titleValue) {
+        const titleField = document.createElement('input');
+        titleField.type = 'hidden';
+        titleField.name = 'title';
+        titleField.value = titleValue;
+        form.appendChild(titleField);
+    }
+    
+    // Get description value
+    const descEditor = document.getElementById('task-description-editor');
+    const descDisplay = document.getElementById('task-description-display');
+    let descValue = '';
+    
+    if (descEditor && window.getComputedStyle(descEditor.parentElement).display !== 'none') {
+        // Description is in edit mode
+        descValue = descEditor.value.trim();
+    } else if (descDisplay) {
+        // Description is in display mode, extract text from HTML
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = descDisplay.innerHTML;
+        descValue = tempDiv.textContent || tempDiv.innerText || '';
+        descValue = descValue.trim();
+        if (descValue === 'Click to add description') descValue = '';
+    }
+    
+    const descField = document.createElement('input');
+    descField.type = 'hidden';
+    descField.name = 'description';
+    descField.value = descValue;
+    form.appendChild(descField);
+    
+    form.submit();
+}
 
 // Edit Title Function
 function editTitle() {
     const displayDiv = document.getElementById('task-title-display');
     const editDiv = document.getElementById('task-title-edit');
     const titleInput = document.getElementById('task-title-input');
+    const titleText = document.getElementById('task-title-text');
     
-    if (displayDiv && editDiv) {
+    if (displayDiv && editDiv && titleInput && titleText) {
         displayDiv.style.display = 'none';
-        editDiv.style.display = 'flex';
+        editDiv.style.display = 'block';
+        titleInput.value = titleText.textContent.trim();
         titleInput.focus();
         titleInput.select();
+        markChanged();
+    }
+}
+
+// Handle title keydown
+function handleTitleKeydown(event) {
+    if (event.key === 'Enter') {
+        event.preventDefault();
+        cancelTitleEdit();
+        // Only save if there are actual changes
+        const saveBtn = document.getElementById('save-task-btn');
+        if (saveBtn && !saveBtn.disabled) {
+            saveAllChanges();
+        }
+    } else if (event.key === 'Escape') {
+        cancelTitleEdit();
+    } else {
+        // Check for changes on any key input
+        setTimeout(checkForChanges, 50);
     }
 }
 
@@ -2818,12 +3357,18 @@ function cancelTitleEdit() {
     const displayDiv = document.getElementById('task-title-display');
     const editDiv = document.getElementById('task-title-edit');
     const titleInput = document.getElementById('task-title-input');
+    const titleText = document.getElementById('task-title-text');
     
-    if (displayDiv && editDiv) {
-        // Reset to original value
-        titleInput.value = document.getElementById('task-title-text').textContent.trim();
+    if (displayDiv && editDiv && titleInput && titleText) {
+        // Don't reset value, keep changes for save button
         displayDiv.style.display = 'block';
         editDiv.style.display = 'none';
+        // Update display text if changed
+        if (titleInput.value !== titleText.textContent.trim()) {
+            titleText.textContent = titleInput.value;
+        }
+        // Check for changes after canceling
+        setTimeout(checkForChanges, 100);
     }
 }
 
@@ -2831,34 +3376,259 @@ function cancelTitleEdit() {
 function editDescription() {
     const displayDiv = document.getElementById('task-description-display');
     const editDiv = document.getElementById('task-description-edit');
-    const editBtn = document.getElementById('edit-description-btn');
-    const editorTextarea = document.getElementById('task-description-editor');
+    const editorDiv = document.getElementById('task-description-editor');
     
-    if (displayDiv && editDiv) {
+    if (displayDiv && editDiv && editorDiv) {
         displayDiv.style.display = 'none';
         editDiv.style.display = 'block';
-        editBtn.style.display = 'none';
+        
+        // Get current description HTML content
+        let descContent = '';
+        const displayHtml = displayDiv.innerHTML.trim();
+        if (displayHtml !== '' && !displayHtml.includes('Click to add description')) {
+            // Extract HTML content from display - get inner content only
+            // Clone the div to get clean HTML without wrapper styles
+            const tempDiv = displayDiv.cloneNode(true);
+            // Remove any wrapper paragraph with styles if it's just the placeholder
+            const placeholderP = tempDiv.querySelector('p[style*="text-muted"]');
+            if (placeholderP && placeholderP.textContent.includes('Click to add description')) {
+                descContent = '';
+            } else {
+                descContent = tempDiv.innerHTML;
+            }
+        } else {
+            descContent = '';
+        }
         
         // Initialize CKEditor if not already initialized
-        if (!descriptionEditor && editorTextarea) {
+        if (!descriptionEditor) {
             ClassicEditor
-                .create(editorTextarea, {
-                    toolbar: ['heading', '|', 'bold', 'italic', 'underline', '|', 'bulletedList', 'numberedList', '|', 'link', 'blockQuote', '|', 'undo', 'redo'],
+                .create(editorDiv, {
+                    toolbar: ['heading', '|', 'bold', 'italic', 'link', 'bulletedList', 'numberedList', '|', 'image', '|', 'undo', 'redo'],
                     heading: {
                         options: [
                             { model: 'paragraph', title: 'Paragraph', class: 'ck-heading_paragraph' },
                             { model: 'heading1', view: 'h1', title: 'Heading 1', class: 'ck-heading_heading1' },
-                            { model: 'heading2', view: 'h2', title: 'Heading 2', class: 'ck-heading_heading2' },
-                            { model: 'heading3', view: 'h3', title: 'Heading 3', class: 'ck-heading_heading3' }
+                            { model: 'heading2', view: 'h2', title: 'Heading 2', class: 'ck-heading_heading2' }
                         ]
+                    },
+                    image: {
+                        toolbar: ['imageTextAlternative', '|', 'imageStyle:alignLeft', 'imageStyle:full', 'imageStyle:alignRight'],
+                        styles: ['full', 'alignLeft', 'alignRight']
                     }
                 })
                 .then(editor => {
                     descriptionEditor = editor;
+                    editor.setData(descContent);
+                    
+                    // Set minimum height
+                    editor.ui.view.editable.element.style.minHeight = '400px';
+                    
+                    // Add custom image upload adapter
+                    editor.plugins.get('FileRepository').createUploadAdapter = (loader) => {
+                        return new CustomUploadAdapter(loader);
+                    };
+                    
+                    // Add @mention functionality
+                    const usersData = <?php echo json_encode($users_list); ?>;
+                    let mentionQuery = '';
+                    let mentionStart = null;
+                    let mentionAutocompleteVisible = false;
+                    let mentionSelectedIndex = 0;
+                    let filteredUsers = [];
+                    
+                    // Create mention autocomplete element
+                    const mentionAutocomplete = document.createElement('div');
+                    mentionAutocomplete.id = 'ckeditor-mention-autocomplete';
+                    mentionAutocomplete.style.cssText = 'display: none; position: absolute; background: white; border: 1px solid #ccc; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); max-height: 200px; overflow-y: auto; z-index: 10000; min-width: 200px;';
+                    document.body.appendChild(mentionAutocomplete);
+                    
+                    function showMentionAutocomplete(editor, users, position) {
+                        filteredUsers = users;
+                        mentionSelectedIndex = 0;
+                        mentionAutocompleteVisible = true;
+                        updateMentionList(users);
+                        positionAutocomplete(editor);
+                    }
+                    
+                    function updateMentionAutocomplete(editor, users, position, query) {
+                        if (!query) {
+                            filteredUsers = users;
+                        } else {
+                            const lowerQuery = query.toLowerCase();
+                            filteredUsers = users.filter(user => 
+                                user.full_name.toLowerCase().includes(lowerQuery) ||
+                                user.email.toLowerCase().includes(lowerQuery)
+                            );
+                        }
+                        mentionSelectedIndex = 0;
+                        updateMentionList(filteredUsers);
+                        positionAutocomplete(editor);
+                    }
+                    
+                    function updateMentionList(users) {
+                        mentionAutocomplete.innerHTML = '';
+                        if (users.length === 0) {
+                            const item = document.createElement('div');
+                            item.style.cssText = 'padding: 8px 12px; color: #999;';
+                            item.textContent = 'No users found';
+                            mentionAutocomplete.appendChild(item);
+                        } else {
+                            users.slice(0, 10).forEach((user, index) => {
+                                const item = document.createElement('div');
+                                item.style.cssText = `padding: 8px 12px; cursor: pointer; ${index === mentionSelectedIndex ? 'background: #e3f2fd;' : ''}`;
+                                item.innerHTML = `<strong>${user.full_name}</strong><br><small style="color: #666;">${user.email}</small>`;
+                                item.onmouseover = () => {
+                                    mentionSelectedIndex = index;
+                                    updateMentionList(filteredUsers);
+                                };
+                                item.onclick = () => {
+                                    selectMention(editor, user);
+                                };
+                                mentionAutocomplete.appendChild(item);
+                            });
+                        }
+                        mentionAutocomplete.style.display = 'block';
+                    }
+                    
+                    function positionAutocomplete(editor) {
+                        const editable = editor.ui.view.editable.element;
+                        const rect = editable.getBoundingClientRect();
+                        mentionAutocomplete.style.top = (rect.bottom + window.scrollY + 5) + 'px';
+                        mentionAutocomplete.style.left = (rect.left + window.scrollX) + 'px';
+                    }
+                    
+                    function hideMentionAutocomplete() {
+                        mentionAutocomplete.style.display = 'none';
+                        mentionAutocompleteVisible = false;
+                    }
+                    
+                    function selectMention(editor, user) {
+                        if (!mentionStart) return;
+                        
+                        const model = editor.model;
+                        const selection = model.document.selection;
+                        const range = model.createRange(model.createPositionAt(selection.focus.parent, mentionStart.offset), selection.focus);
+                        
+                        model.change(writer => {
+                            writer.remove(range);
+                            const mentionText = `@${user.full_name} `;
+                            writer.insertText(mentionText, range.start);
+                        });
+                        
+                        hideMentionAutocomplete();
+                        mentionStart = null;
+                        mentionQuery = '';
+                    }
+                    
+                    function navigateMentions(direction) {
+                        if (direction === 'down') {
+                            mentionSelectedIndex = Math.min(mentionSelectedIndex + 1, Math.min(filteredUsers.length - 1, 9));
+                        } else {
+                            mentionSelectedIndex = Math.max(mentionSelectedIndex - 1, 0);
+                        }
+                        updateMentionList(filteredUsers);
+                    }
+                    
+                    // Listen for editor changes
+                    editor.model.document.on('change:data', (evt, data) => {
+                        checkForChanges();
+                        
+                        // Check for @ mentions
+                        const changes = Array.from(data.batch.differ.getChanges());
+                        for (const change of changes) {
+                            if (change.type === 'insert' && change.name === '$text') {
+                                const text = change.data.data;
+                                if (text === '@') {
+                                    mentionStart = { offset: change.position.offset };
+                                    mentionQuery = '';
+                                    showMentionAutocomplete(editor, usersData, change.position);
+                                } else if (mentionStart && /^[a-zA-Z0-9\s]*$/.test(text)) {
+                                    mentionQuery += text;
+                                    updateMentionAutocomplete(editor, usersData, mentionStart, mentionQuery);
+                                } else if (mentionStart && (text === ' ' || text === '\n' || text === '@')) {
+                                    hideMentionAutocomplete();
+                                    mentionStart = null;
+                                    mentionQuery = '';
+                                    if (text === '@') {
+                                        mentionStart = { offset: change.position.offset };
+                                        showMentionAutocomplete(editor, usersData, change.position);
+                                    }
+                                }
+                            } else if (change.type === 'remove' && mentionStart) {
+                                const removedText = change.data.data;
+                                if (removedText === '@' || mentionQuery.length === 0) {
+                                    hideMentionAutocomplete();
+                                    mentionStart = null;
+                                    mentionQuery = '';
+                                } else {
+                                    mentionQuery = mentionQuery.slice(0, -1);
+                                    updateMentionAutocomplete(editor, usersData, mentionStart, mentionQuery);
+                                }
+                            }
+                        }
+                    });
+                    
+                    // Handle keyboard navigation for mentions
+                    editor.keystrokes.set('Enter', (data, cancel) => {
+                        if (mentionStart && mentionAutocompleteVisible && filteredUsers.length > 0) {
+                            cancel();
+                            selectMention(editor, filteredUsers[mentionSelectedIndex]);
+                            return false;
+                        }
+                    });
+                    
+                    editor.keystrokes.set('ArrowDown', (data, cancel) => {
+                        if (mentionStart && mentionAutocompleteVisible) {
+                            cancel();
+                            navigateMentions('down');
+                            return false;
+                        }
+                    });
+                    
+                    editor.keystrokes.set('ArrowUp', (data, cancel) => {
+                        if (mentionStart && mentionAutocompleteVisible) {
+                            cancel();
+                            navigateMentions('up');
+                            return false;
+                        }
+                    });
+                    
+                    editor.keystrokes.set('Escape', (data, cancel) => {
+                        if (mentionStart && mentionAutocompleteVisible) {
+                            cancel();
+                            hideMentionAutocomplete();
+                            mentionStart = null;
+                            mentionQuery = '';
+                            return false;
+                        }
+                    });
                 })
                 .catch(error => {
                     console.error('Error initializing CKEditor:', error);
                 });
+        } else {
+            // Editor already exists, just set the data
+            descriptionEditor.setData(descContent);
+        }
+        
+        markChanged();
+    }
+}
+
+// Handle description keydown (for CKEditor)
+function handleDescriptionKeydown(event) {
+    if (event.key === 'Escape') {
+        cancelDescriptionEdit();
+    }
+    // Ctrl+Enter or Cmd+Enter to save
+    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+        event.preventDefault();
+        cancelDescriptionEdit();
+        // Only save if there are actual changes
+        const saveBtn = document.getElementById('save-task-btn');
+        if (saveBtn && !saveBtn.disabled) {
+            saveAllChanges();
         }
     }
 }
@@ -2867,39 +3637,42 @@ function editDescription() {
 function cancelDescriptionEdit() {
     const displayDiv = document.getElementById('task-description-display');
     const editDiv = document.getElementById('task-description-edit');
-    const editBtn = document.getElementById('edit-description-btn');
     
     if (displayDiv && editDiv) {
+        // Get current content from CKEditor if it exists
+        let newValue = '';
+        if (descriptionEditor) {
+            newValue = descriptionEditor.getData().trim();
+        }
+        
+        const currentText = displayDiv.textContent.trim();
+        const currentTextClean = currentText === 'Click to add description' ? '' : currentText;
+        const currentHtml = displayDiv.innerHTML.trim();
+        
         displayDiv.style.display = 'block';
         editDiv.style.display = 'none';
-        editBtn.style.display = 'flex';
         
-        // Destroy CKEditor instance if it exists
-        if (descriptionEditor) {
-            descriptionEditor.destroy()
-                .then(() => {
-                    descriptionEditor = null;
-                })
-                .catch(error => {
-                    console.error('Error destroying CKEditor:', error);
-                });
+        // Update display if changed (compare HTML content)
+        if (newValue !== currentHtml && newValue !== currentTextClean) {
+            if (newValue) {
+                displayDiv.innerHTML = newValue;
+            } else {
+                displayDiv.innerHTML = '<p style="color: var(--text-muted); font-style: italic; margin: 0;">Click to add description</p>';
+            }
         }
+        // Check for changes after canceling
+        setTimeout(checkForChanges, 100);
     }
 }
 
-// Handle form submission for description - get data from CKEditor
-document.addEventListener('DOMContentLoaded', function() {
-    const descriptionForm = document.getElementById('descriptionEditForm');
-    if (descriptionForm) {
-        descriptionForm.addEventListener('submit', function(e) {
-            if (descriptionEditor) {
-                // Update textarea with CKEditor content before form submission
-                const editorData = descriptionEditor.getData();
-                document.getElementById('task-description-editor').value = editorData;
-            }
-        });
+// Clear due date field
+function clearDueDateField() {
+    const dueDateInput = document.getElementById('task-due-date');
+    if (dueDateInput) {
+        dueDateInput.value = '';
+        checkForChanges();
     }
-});
+}
 </script>
 
 <?php include 'includes/footer.php'; ?>

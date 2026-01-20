@@ -566,7 +566,7 @@ h6 { font-size: 14px; }
 .main-container {
     width: 100%;
     margin: 0;
-    padding: 0;
+    padding: 10;
     background-color: var(--page-bg);
     min-height: calc(100vh - 60px);
 }
@@ -580,6 +580,15 @@ h6 { font-size: 14px; }
     
     margin-left: auto;
     margin-right: auto;
+}
+
+/* Remove padding for task view page */
+.content-wrapper:has(.task-view-page),
+.task-view-page {
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+    margin-left: 0 !important;
+    margin-right: 0 !important;
 }
 
 /* Page Header */
@@ -784,6 +793,45 @@ h6 { font-size: 14px; }
     display: block;
     margin-top: 5px;
     font-size: 12px;
+}
+
+/* Password Toggle Icon */
+.password-input-wrapper {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.password-input-wrapper input[type="password"],
+.password-input-wrapper input[type="text"] {
+    padding-right: 40px;
+}
+
+.password-toggle-icon {
+    position: absolute;
+    right: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    cursor: pointer;
+    color: #6B7280;
+    font-size: 16px;
+    z-index: 10;
+    transition: color 0.2s ease;
+    background: none;
+    border: none;
+    padding: 5px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.password-toggle-icon:hover {
+    color: #14b8a6;
+}
+
+.password-toggle-icon:focus {
+    outline: none;
+    color: #14b8a6;
 }
 
 .form-row {
@@ -1903,6 +1951,8 @@ table tbody tr:empty {
     z-index: 1000;
     padding: 8px 12px;
     padding-bottom: calc(8px + env(safe-area-inset-bottom));
+    justify-content: space-around;
+    align-items: center;
 }
 
 .mobile-nav-link {
@@ -1921,6 +1971,28 @@ table tbody tr:empty {
     cursor: pointer;
     gap: 4px;
     min-width: 0;
+    max-width: 100%;
+}
+
+.mobile-nav-profile {
+    flex: 1;
+    display: flex !important;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 8px 6px;
+    color: #64748b;
+    text-decoration: none;
+    font-size: 11px;
+    transition: all 0.2s;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    gap: 4px;
+    min-width: 0;
+    max-width: 100%;
+    width: auto;
+    height: auto;
 }
 
 .mobile-nav-link i {
@@ -1940,6 +2012,34 @@ table tbody tr:empty {
 
 .mobile-nav-link.active i {
     color: #14b8a6;
+}
+
+.mobile-nav-profile:hover,
+.mobile-nav-profile.active {
+    color: #14b8a6;
+}
+
+.mobile-nav-profile i {
+    font-size: 20px;
+    margin-bottom: 2px;
+    display: block;
+}
+
+.mobile-nav-profile span {
+    font-size: 11px;
+    font-weight: 500;
+    display: block;
+}
+
+/* Ensure mobile profile button is always visible on mobile */
+@media (max-width: 768px) {
+    .mobile-nav-profile,
+    #mobileProfileBtn {
+        display: flex !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        pointer-events: auto !important;
+    }
 }
 
 /* Mobile Profile Dropdown Backdrop */
@@ -2133,7 +2233,16 @@ table tbody tr:empty {
     
     /* Show mobile bottom navigation */
     .mobile-bottom-nav {
-        display: flex;
+        display: flex !important;
+        visibility: visible !important;
+    }
+    
+    /* Ensure profile button is visible */
+    .mobile-nav-profile,
+    #mobileProfileBtn {
+        display: flex !important;
+        visibility: visible !important;
+        opacity: 1 !important;
     }
     
     /* Add padding to main container to prevent content from being hidden behind bottom nav */

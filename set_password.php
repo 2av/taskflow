@@ -187,17 +187,27 @@ if (empty($token)) {
                     
                     <div class="form-group">
                         <label for="password">Password *</label>
-                        <input type="password" id="password" name="password" required minlength="6" autofocus
-                               placeholder="Enter password" autocomplete="new-password"
-                               class="<?php echo isset($field_errors['password']) ? 'error-field' : ''; ?>">
+                        <div class="password-input-wrapper">
+                            <input type="password" id="password" name="password" required minlength="6" autofocus
+                                   placeholder="Enter password" autocomplete="new-password"
+                                   class="<?php echo isset($field_errors['password']) ? 'error-field' : ''; ?>">
+                            <button type="button" class="password-toggle-icon" onclick="togglePassword('password')" title="Show/Hide Password">
+                                <i class="fas fa-eye" id="password-toggle-icon"></i>
+                            </button>
+                        </div>
                         <small style="color: #666;">Minimum 6 characters</small>
                     </div>
                     
                     <div class="form-group">
                         <label for="confirm_password">Confirm Password *</label>
-                        <input type="password" id="confirm_password" name="confirm_password" required minlength="6"
-                               placeholder="Confirm your password" autocomplete="new-password"
-                               class="<?php echo isset($field_errors['confirm_password']) ? 'error-field' : ''; ?>">
+                        <div class="password-input-wrapper">
+                            <input type="password" id="confirm_password" name="confirm_password" required minlength="6"
+                                   placeholder="Confirm your password" autocomplete="new-password"
+                                   class="<?php echo isset($field_errors['confirm_password']) ? 'error-field' : ''; ?>">
+                            <button type="button" class="password-toggle-icon" onclick="togglePassword('confirm_password')" title="Show/Hide Password">
+                                <i class="fas fa-eye" id="confirm_password-toggle-icon"></i>
+                            </button>
+                        </div>
                     </div>
                     
                     <button type="submit" class="btn btn-primary btn-block" title="Set Password">
@@ -211,5 +221,24 @@ if (empty($token)) {
             </div>
         </div>
     </div>
+    
+    <script>
+    function togglePassword(inputId) {
+        const input = document.getElementById(inputId);
+        const icon = document.getElementById(inputId + '-toggle-icon');
+        
+        if (input && icon) {
+            if (input.type === 'password') {
+                input.type = 'text';
+                icon.classList.remove('fa-eye');
+                icon.classList.add('fa-eye-slash');
+            } else {
+                input.type = 'password';
+                icon.classList.remove('fa-eye-slash');
+                icon.classList.add('fa-eye');
+            }
+        }
+    }
+    </script>
 </body>
 </html>

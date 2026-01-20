@@ -83,12 +83,22 @@ include 'includes/header.php';
         <form method="POST" action="">
             <div class="form-group">
                 <label for="current_password">Current Password *</label>
-                <input type="password" id="current_password" name="current_password" required autofocus>
+                <div class="password-input-wrapper">
+                    <input type="password" id="current_password" name="current_password" required autofocus>
+                    <button type="button" class="password-toggle-icon" onclick="togglePassword('current_password')" title="Show/Hide Password">
+                        <i class="fas fa-eye" id="current_password-toggle-icon"></i>
+                    </button>
+                </div>
             </div>
             
             <div class="form-group">
                 <label for="new_password">New Password *</label>
-                <input type="password" id="new_password" name="new_password" required minlength="6">
+                <div class="password-input-wrapper">
+                    <input type="password" id="new_password" name="new_password" required minlength="6">
+                    <button type="button" class="password-toggle-icon" onclick="togglePassword('new_password')" title="Show/Hide Password">
+                        <i class="fas fa-eye" id="new_password-toggle-icon"></i>
+                    </button>
+                </div>
                 <small style="color: #666; font-size: 12px; margin-top: 5px; display: block;">
                     Password must be at least 6 characters long
                 </small>
@@ -96,7 +106,12 @@ include 'includes/header.php';
             
             <div class="form-group">
                 <label for="confirm_password">Confirm New Password *</label>
-                <input type="password" id="confirm_password" name="confirm_password" required minlength="6">
+                <div class="password-input-wrapper">
+                    <input type="password" id="confirm_password" name="confirm_password" required minlength="6">
+                    <button type="button" class="password-toggle-icon" onclick="togglePassword('confirm_password')" title="Show/Hide Password">
+                        <i class="fas fa-eye" id="confirm_password-toggle-icon"></i>
+                    </button>
+                </div>
             </div>
             
             <div style="display: flex; gap: 10px; margin-top: 25px;">
@@ -108,6 +123,23 @@ include 'includes/header.php';
 </div>
 
 <script>
+function togglePassword(inputId) {
+    const input = document.getElementById(inputId);
+    const icon = document.getElementById(inputId + '-toggle-icon');
+    
+    if (input && icon) {
+        if (input.type === 'password') {
+            input.type = 'text';
+            icon.classList.remove('fa-eye');
+            icon.classList.add('fa-eye-slash');
+        } else {
+            input.type = 'password';
+            icon.classList.remove('fa-eye-slash');
+            icon.classList.add('fa-eye');
+        }
+    }
+}
+
 $(document).ready(function() {
     // Password match validation
     $('#confirm_password').on('keyup', function() {
@@ -117,16 +149,16 @@ $(document).ready(function() {
         if (confirmPassword.length > 0) {
             if (newPassword !== confirmPassword) {
                 $(this).css('border-color', '#e74c3c');
-                if ($(this).next('.password-match').length === 0) {
-                    $(this).after('<small class="password-match" style="color: #e74c3c; display: block; margin-top: 5px;">Passwords do not match</small>');
+                if ($(this).closest('.password-input-wrapper').next('.password-match').length === 0) {
+                    $(this).closest('.password-input-wrapper').after('<small class="password-match" style="color: #e74c3c; display: block; margin-top: 5px;">Passwords do not match</small>');
                 }
             } else {
                 $(this).css('border-color', '#27ae60');
-                $(this).next('.password-match').remove();
+                $(this).closest('.password-input-wrapper').next('.password-match').remove();
             }
         } else {
             $(this).css('border-color', '#ddd');
-            $(this).next('.password-match').remove();
+            $(this).closest('.password-input-wrapper').next('.password-match').remove();
         }
     });
     

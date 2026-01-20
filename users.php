@@ -387,7 +387,12 @@ include 'includes/header.php';
             <?php if ($edit_user): ?>
                 <div class="form-group">
                     <label for="password">Password (leave blank to keep current)</label>
-                    <input type="password" id="password" name="password">
+                    <div class="password-input-wrapper">
+                        <input type="password" id="password" name="password">
+                        <button type="button" class="password-toggle-icon" onclick="togglePassword('password')" title="Show/Hide Password">
+                            <i class="fas fa-eye" id="password-toggle-icon"></i>
+                        </button>
+                    </div>
                 </div>
             <?php endif; ?>
             
@@ -447,5 +452,24 @@ include 'includes/header.php';
         });
     </script>
 <?php endif; ?>
+
+<script>
+function togglePassword(inputId) {
+    const input = document.getElementById(inputId);
+    const icon = document.getElementById(inputId + '-toggle-icon');
+    
+    if (input && icon) {
+        if (input.type === 'password') {
+            input.type = 'text';
+            icon.classList.remove('fa-eye');
+            icon.classList.add('fa-eye-slash');
+        } else {
+            input.type = 'password';
+            icon.classList.remove('fa-eye-slash');
+            icon.classList.add('fa-eye');
+        }
+    }
+}
+</script>
 
 <?php include 'includes/footer.php'; ?>
