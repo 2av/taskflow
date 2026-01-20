@@ -527,13 +527,13 @@ $activities = $conn->query("
     ORDER BY a.created_at DESC
 ")->fetch_all(MYSQLI_ASSOC);
 
-// Get users for assignee dropdown and @mentions (filtered by organization)
+// Get users for assignee dropdown and @mentions (filtered by organization, excluding deleted users)
 if (isSuperAdmin()) {
-    $users_list = $conn->query("SELECT id, full_name, email FROM users WHERE status = 'active' ORDER BY full_name")->fetch_all(MYSQLI_ASSOC);
+    $users_list = $conn->query("SELECT id, full_name, email FROM users WHERE status = 'active' AND deleted = 0 ORDER BY full_name")->fetch_all(MYSQLI_ASSOC);
 } else {
     $org_id = getOrganizationId();
     if ($org_id) {
-        $stmt = $conn->prepare("SELECT id, full_name, email FROM users WHERE organization_id = ? AND status = 'active' ORDER BY full_name");
+        $stmt = $conn->prepare("SELECT id, full_name, email FROM users WHERE organization_id = ? AND status = 'active' AND deleted = 0 ORDER BY full_name");
         $stmt->bind_param("i", $org_id);
         $stmt->execute();
         $result = $stmt->get_result();

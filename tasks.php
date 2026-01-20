@@ -545,7 +545,7 @@ $stats_query = "
 // Get projects for filter (filtered by organization)
 if (isSuperAdmin()) {
     $projects = $conn->query("SELECT * FROM projects ORDER BY name")->fetch_all(MYSQLI_ASSOC);
-$users = $conn->query("SELECT * FROM users WHERE status = 'active' ORDER BY full_name")->fetch_all(MYSQLI_ASSOC);
+$users = $conn->query("SELECT * FROM users WHERE status = 'active' AND deleted = 0 ORDER BY full_name")->fetch_all(MYSQLI_ASSOC);
 } else {
     $org_id = getOrganizationId();
     $stmt = $conn->prepare("SELECT * FROM projects WHERE organization_id = ? ORDER BY name");
@@ -555,7 +555,7 @@ $users = $conn->query("SELECT * FROM users WHERE status = 'active' ORDER BY full
     $projects = $result->fetch_all(MYSQLI_ASSOC);
     $stmt->close();
     
-    $stmt = $conn->prepare("SELECT * FROM users WHERE organization_id = ? AND status = 'active' ORDER BY full_name");
+    $stmt = $conn->prepare("SELECT * FROM users WHERE organization_id = ? AND status = 'active' AND deleted = 0 ORDER BY full_name");
     $stmt->bind_param("i", $org_id);
     $stmt->execute();
     $result = $stmt->get_result();

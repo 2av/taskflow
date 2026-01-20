@@ -26,8 +26,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['create_user'])) {
     } elseif (!$organization_id && !isSuperAdmin()) {
         $error = 'Organization not found';
     } else {
-        // Check if email already exists
-        $check_stmt = $conn->prepare("SELECT id FROM users WHERE email = ?");
+        // Check if email already exists (excluding deleted users)
+        $check_stmt = $conn->prepare("SELECT id FROM users WHERE email = ? AND deleted = 0");
         $check_stmt->bind_param("s", $email);
         $check_stmt->execute();
         $check_result = $check_stmt->get_result();
@@ -127,8 +127,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_user'])) {
     } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
         $error = 'Please enter a valid email address';
     } else {
-        // Check if email already exists for another user
-        $check_stmt = $conn->prepare("SELECT id FROM users WHERE email = ? AND id != ?");
+        // Check if email already exists for another user (excluding deleted users)
+        $check_stmt = $conn->prepare("SELECT id FROM users WHERE email = ? AND id != ? AND deleted = 0");
         $check_stmt->bind_param("si", $email, $user_id);
         $check_stmt->execute();
         $check_result = $check_stmt->get_result();
@@ -164,11 +164,12 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_user'])) {
     }
 }
 
-// Handle user deletion
+// Handle user deletion (soft delete)
 if (isset($_GET['delete'])) {
     $user_id = intval($_GET['delete']);
     if ($user_id != $_SESSION['user_id']) {
-        $stmt = $conn->prepare("DELETE FROM users WHERE id = ?");
+        // Soft delete: set deleted = 1 instead of actually deleting the record
+        $stmt = $conn->prepare("UPDATE users SET deleted = 1, status = 'inactive' WHERE id = ?");
         $stmt->bind_param("i", $user_id);
         if ($stmt->execute()) {
             $message = 'User deleted successfully';
@@ -218,12 +219,16 @@ if (isSuperAdmin()) {
     $organizations = $conn->query("SELECT * FROM organizations ORDER BY name")->fetch_all(MYSQLI_ASSOC);
 }
 
-// Get user for editing
+// Get user for editing (excluding deleted users)
 $edit_user = null;
 if (isset($_GET['edit'])) {
     $edit_id = intval($_GET['edit']);
-    $result = $conn->query("SELECT * FROM users WHERE id = $edit_id");
+    $stmt = $conn->prepare("SELECT * FROM users WHERE id = ? AND deleted = 0");
+    $stmt->bind_param("i", $edit_id);
+    $stmt->execute();
+    $result = $stmt->get_result();
     $edit_user = $result->fetch_assoc();
+    $stmt->close();
 }
 
 $conn->close();

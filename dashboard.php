@@ -414,6 +414,7 @@ if ($selected_project_id) {
         LEFT JOIN project_users pu ON pu.project_id = ? AND pu.user_id = u.id
         WHERE (p.project_manager_id = u.id OR pu.user_id IS NOT NULL)
         AND u.organization_id = (SELECT organization_id FROM projects WHERE id = ?)
+        AND u.deleted = 0
         ORDER BY 
             CASE WHEN p.project_manager_id = u.id THEN 1 ELSE 2 END,
             u.full_name ASC
@@ -540,19 +541,19 @@ if ($selected_project_id) {
 $pm_users = [];
 $all_users_for_project = [];
 if (isSuperAdmin()) {
-    $pm_users = $conn->query("SELECT u.id, u.full_name FROM users u JOIN roles r ON u.role_id = r.id WHERE r.name IN ('Admin', 'Project Manager', 'Super Admin') AND u.status = 'active' ORDER BY u.full_name")->fetch_all(MYSQLI_ASSOC);
-    $all_users_for_project = $conn->query("SELECT id, full_name FROM users WHERE status = 'active' ORDER BY full_name")->fetch_all(MYSQLI_ASSOC);
+    $pm_users = $conn->query("SELECT u.id, u.full_name FROM users u JOIN roles r ON u.role_id = r.id WHERE r.name IN ('Admin', 'Project Manager', 'Super Admin') AND u.status = 'active' AND u.deleted = 0 ORDER BY u.full_name")->fetch_all(MYSQLI_ASSOC);
+    $all_users_for_project = $conn->query("SELECT id, full_name FROM users WHERE status = 'active' AND deleted = 0 ORDER BY full_name")->fetch_all(MYSQLI_ASSOC);
 } else {
     $org_id = getOrganizationId();
     if ($org_id) {
-        $stmt = $conn->prepare("SELECT u.id, u.full_name FROM users u JOIN roles r ON u.role_id = r.id WHERE u.organization_id = ? AND r.name IN ('Admin', 'Project Manager') AND u.status = 'active' ORDER BY u.full_name");
+        $stmt = $conn->prepare("SELECT u.id, u.full_name FROM users u JOIN roles r ON u.role_id = r.id WHERE u.organization_id = ? AND r.name IN ('Admin', 'Project Manager') AND u.status = 'active' AND u.deleted = 0 ORDER BY u.full_name");
         $stmt->bind_param("i", $org_id);
         $stmt->execute();
         $result = $stmt->get_result();
         $pm_users = $result->fetch_all(MYSQLI_ASSOC);
         $stmt->close();
         
-        $stmt = $conn->prepare("SELECT id, full_name FROM users WHERE organization_id = ? AND status = 'active' ORDER BY full_name");
+        $stmt = $conn->prepare("SELECT id, full_name FROM users WHERE organization_id = ? AND status = 'active' AND deleted = 0 ORDER BY full_name");
         $stmt->bind_param("i", $org_id);
         $stmt->execute();
         $result = $stmt->get_result();
@@ -1449,13 +1450,13 @@ include 'includes/header.php';
                 </div>
                 <div class="dashboard-action-buttons" style="display: flex; gap: 8px; align-items: center;">
                     <button type="button" onclick="openAddTaskModal()" class="btn-add-task" 
-                            style="display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; background: var(--chart-green); color: white; border-radius: 6px; text-decoration: none; font-size: 14px; font-weight: 500; transition: all 0.2s; box-shadow: 0 2px 4px rgba(0,0,0,0.1); border: none; cursor: pointer;">
+                            style="display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; background: var(--chart-green); color: white; text-decoration: none; font-size: 14px; font-weight: 500; transition: all 0.2s; box-shadow: 0 2px 4px rgba(0,0,0,0.1); border: none; cursor: pointer;">
                         <i class="fas fa-plus"></i>
                         <span class="btn-text">Add Task</span>
                     </button>
                     <?php if ($selected_project_id): ?>
                         <a href="tasks?project_id=<?php echo $selected_project_id; ?>" class="btn-view-tasks"
-                           style="display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; background: var(--blue); color: white; border-radius: 6px; text-decoration: none; font-size: 14px; font-weight: 500; transition: all 0.2s;">
+                           style="display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; background: var(--blue); color: white;  text-decoration: none; font-size: 14px; font-weight: 500; transition: all 0.2s;">
                             <i class="fas fa-tasks"></i>
                             <span class="btn-text">View Tasks</span>
                         </a>

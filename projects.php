@@ -161,20 +161,20 @@ if (isSuperAdmin()) {
     $stmt->close();
 }
 
-// Get users for dropdowns (filtered by organization)
+// Get users for dropdowns (filtered by organization, excluding deleted users)
 if (isSuperAdmin()) {
-    $all_users = $conn->query("SELECT * FROM users WHERE status = 'active' ORDER BY full_name")->fetch_all(MYSQLI_ASSOC);
-    $pm_users = $conn->query("SELECT * FROM users u JOIN roles r ON u.role_id = r.id WHERE r.name IN ('Admin', 'Project Manager', 'Super Admin') AND u.status = 'active' ORDER BY full_name")->fetch_all(MYSQLI_ASSOC);
+    $all_users = $conn->query("SELECT * FROM users WHERE status = 'active' AND deleted = 0 ORDER BY full_name")->fetch_all(MYSQLI_ASSOC);
+    $pm_users = $conn->query("SELECT * FROM users u JOIN roles r ON u.role_id = r.id WHERE r.name IN ('Admin', 'Project Manager', 'Super Admin') AND u.status = 'active' AND u.deleted = 0 ORDER BY full_name")->fetch_all(MYSQLI_ASSOC);
 } else {
     $org_id = getOrganizationId();
-    $stmt = $conn->prepare("SELECT * FROM users WHERE organization_id = ? AND status = 'active' ORDER BY full_name");
+    $stmt = $conn->prepare("SELECT * FROM users WHERE organization_id = ? AND status = 'active' AND deleted = 0 ORDER BY full_name");
     $stmt->bind_param("i", $org_id);
     $stmt->execute();
     $result = $stmt->get_result();
     $all_users = $result->fetch_all(MYSQLI_ASSOC);
     $stmt->close();
     
-    $stmt = $conn->prepare("SELECT u.* FROM users u JOIN roles r ON u.role_id = r.id WHERE u.organization_id = ? AND r.name IN ('Admin', 'Project Manager') AND u.status = 'active' ORDER BY u.full_name");
+    $stmt = $conn->prepare("SELECT u.* FROM users u JOIN roles r ON u.role_id = r.id WHERE u.organization_id = ? AND r.name IN ('Admin', 'Project Manager') AND u.status = 'active' AND u.deleted = 0 ORDER BY u.full_name");
     $stmt->bind_param("i", $org_id);
     $stmt->execute();
     $result = $stmt->get_result();

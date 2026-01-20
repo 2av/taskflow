@@ -209,8 +209,8 @@ if (empty($token)) {
                     // Setup token - user_id might be in token_data or we need to find it
                     $user_id = $token_data['user_id'] ?? null;
                     if (!$user_id && isset($token_data['email'])) {
-                        // Find user by email and organization
-                        $find_user = $conn->prepare("SELECT id FROM users WHERE email = ? AND organization_id = ?");
+                        // Find user by email and organization (excluding deleted users)
+                        $find_user = $conn->prepare("SELECT id FROM users WHERE email = ? AND organization_id = ? AND deleted = 0");
                         $find_user->bind_param("si", $token_data['email'], $token_data['org_id']);
                         $find_user->execute();
                         $user_result = $find_user->get_result();

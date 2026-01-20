@@ -48,13 +48,13 @@ if (isSuperAdmin()) {
     }
 }
 
-// Get users list for assignee
+// Get users list for assignee (excluding deleted users)
 if (isSuperAdmin()) {
-    $users = $conn->query("SELECT id, full_name FROM users WHERE status = 'active' ORDER BY full_name")->fetch_all(MYSQLI_ASSOC);
+    $users = $conn->query("SELECT id, full_name FROM users WHERE status = 'active' AND deleted = 0 ORDER BY full_name")->fetch_all(MYSQLI_ASSOC);
 } else {
     $org_id = getOrganizationId();
     if ($org_id) {
-        $stmt = $conn->prepare("SELECT id, full_name FROM users WHERE organization_id = ? AND status = 'active' ORDER BY full_name");
+        $stmt = $conn->prepare("SELECT id, full_name FROM users WHERE organization_id = ? AND status = 'active' AND deleted = 0 ORDER BY full_name");
         $stmt->bind_param("i", $org_id);
         $stmt->execute();
         $result = $stmt->get_result();

@@ -42,8 +42,8 @@ if (empty($token)) {
                 $field_errors['password'] = true;
                 $field_errors['confirm_password'] = true;
             } else {
-                // Check if user already exists (should exist from organization verification)
-                $stmt = $conn->prepare("SELECT id, status FROM users WHERE email = ? AND organization_id = ?");
+                // Check if user already exists (should exist from organization verification, excluding deleted users)
+                $stmt = $conn->prepare("SELECT id, status FROM users WHERE email = ? AND organization_id = ? AND deleted = 0");
                 $stmt->bind_param("si", $token_data['email'], $token_data['organization_id']);
                 $stmt->execute();
                 $result = $stmt->get_result();

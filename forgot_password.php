@@ -24,8 +24,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         // Normalize email
         $email_normalized = strtolower(trim($email));
         
-        // Check if user exists with this email (active or inactive)
-        $stmt = $conn->prepare("SELECT u.*, o.name as org_name, o.id as org_id FROM users u LEFT JOIN organizations o ON u.organization_id = o.id WHERE u.email = ?");
+        // Check if user exists with this email (active or inactive, excluding deleted users)
+        $stmt = $conn->prepare("SELECT u.*, o.name as org_name, o.id as org_id FROM users u LEFT JOIN organizations o ON u.organization_id = o.id WHERE u.email = ? AND u.deleted = 0");
         $stmt->bind_param("s", $email_normalized);
         $stmt->execute();
         $result = $stmt->get_result();

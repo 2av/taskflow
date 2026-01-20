@@ -168,8 +168,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['submit_org_details']))
                             $hashed_temp_password = password_hash($temp_password, PASSWORD_DEFAULT);
                             $temp_full_name = $org_name . ' Admin';
                             
-                            // Check if user already exists
-                            $check_stmt = $conn->prepare("SELECT id FROM users WHERE email = ?");
+                            // Check if user already exists (excluding deleted users)
+                            $check_stmt = $conn->prepare("SELECT id FROM users WHERE email = ? AND deleted = 0");
                             $check_stmt->bind_param("s", $temp_org['email']);
                             $check_stmt->execute();
                             $check_result = $check_stmt->get_result();

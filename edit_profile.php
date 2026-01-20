@@ -11,7 +11,7 @@ $error = '';
 
 // Get current user data
 $user_id = $_SESSION['user_id'];
-$user_query = $conn->prepare("SELECT u.*, r.name as role_name FROM users u JOIN roles r ON u.role_id = r.id WHERE u.id = ?");
+$user_query = $conn->prepare("SELECT u.*, r.name as role_name FROM users u JOIN roles r ON u.role_id = r.id WHERE u.id = ? AND u.deleted = 0");
 $user_query->bind_param("i", $user_id);
 $user_query->execute();
 $user_result = $user_query->get_result();
@@ -39,7 +39,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_profile'])) {
         $error = 'Invalid email format';
     } else {
         // Check if email is already taken by another user
-        $email_check = $conn->prepare("SELECT id FROM users WHERE email = ? AND id != ?");
+        $email_check = $conn->prepare("SELECT id FROM users WHERE email = ? AND id != ? AND deleted = 0");
         $email_check->bind_param("si", $email, $user_id);
         $email_check->execute();
         $email_result = $email_check->get_result();
