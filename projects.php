@@ -312,13 +312,13 @@ include 'includes/header.php';
                             </td>
                             <td style="text-align: center;">
                                 <div style="display: inline-flex; gap: 6px;">
-                                    <a href="tasks?project_id=<?php echo $project['id']; ?>" class="btn btn-sm btn-primary" title="View Tasks" style="padding: 6px 10px; background: #14b8a6; color: white; border: none; border-radius: 6px; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; transition: all 0.2s;">
+                                    <a href="tasks?project_id=<?php echo $project['id']; ?>" class="btn btn-sm btn-primary" title="View Tasks" style="padding: 6px 10px; background: #14b8a6; color: white; border: none;  text-decoration: none; display: inline-flex; align-items: center; justify-content: center; transition: all 0.2s;">
                                         <i class="fas fa-eye"></i>
                                     </a>
-                                    <a href="?edit=<?php echo $project['id']; ?>" class="btn btn-sm btn-warning" title="Edit" style="padding: 6px 10px; background: #f59e0b; color: white; border: none; border-radius: 6px; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; transition: all 0.2s;">
+                                    <a href="?edit=<?php echo $project['id']; ?>" class="btn btn-sm btn-warning" title="Edit" style="padding: 6px 10px; background: #f59e0b; color: white; border: none;  text-decoration: none; display: inline-flex; align-items: center; justify-content: center; transition: all 0.2s;">
                                         <i class="fas fa-edit"></i>
                                     </a>
-                                    <a href="?delete=<?php echo $project['id']; ?>" class="btn btn-sm btn-danger btn-delete" title="Delete" style="padding: 6px 10px; background: #ef4444; color: white; border: none; border-radius: 6px; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; transition: all 0.2s;">
+                                    <a href="?delete=<?php echo $project['id']; ?>" class="btn btn-sm btn-danger btn-delete" title="Delete" style="padding: 6px 10px; background: #ef4444; color: white; border: none;  text-decoration: none; display: inline-flex; align-items: center; justify-content: center; transition: all 0.2s;">
                                         <i class="fas fa-trash"></i>
                                     </a>
                                 </div>

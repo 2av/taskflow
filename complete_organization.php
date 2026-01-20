@@ -90,7 +90,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
 </head>
 <body class="login-page">
     <div class="login-container">
-        <div class="login-box" style="max-width: 700px;">
+        <div class="login-box max-w-700">
             <h1>Complete Organization Details</h1>
             <p class="subtitle">Welcome to <strong><?php echo htmlspecialchars($organization_name); ?></strong></p>
             <p style="color: #666; font-size: 14px; margin-bottom: 20px;">Please provide additional information about your organization (all fields are optional)</p>
@@ -101,7 +101,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             
             <?php if ($success): ?>
                 <div class="alert alert-success"><?php echo htmlspecialchars($success); ?></div>
-                <div style="text-align: center; margin-top: 20px;">
+                <div class="text-center mt-20">
                     <a href="index" class="btn btn-primary">Go to Login</a>
                 </div>
             <?php else: ?>
@@ -173,8 +173,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                     </button>
                 </form>
                 
-                <div style="text-align: center; margin-top: 20px;">
-                    <a href="index" style="color: #667eea; text-decoration: none;">Skip and go to Login</a>
+                <div class="text-center mt-20">
+                    <a href="index" class="link-primary">Skip and go to Login</a>
                 </div>
             <?php endif; ?>
         </div>

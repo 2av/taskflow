@@ -609,15 +609,14 @@ include 'includes/header.php';
     align-items: center;
     justify-content: space-between;
     padding: 10px 12px;
-    margin-bottom: 2px;
-    border-radius: 4px;
+    border-radius: 0px;
     cursor: pointer;
     transition: all 0.2s ease;
     text-decoration: none;
     color: var(--text-primary);
     background: var(--page-bg);
     border: 1px solid var(--border-color);
-    margin-bottom: 2px;
+    margin-bottom: 5px;
 }
 
 .project-item:hover {
@@ -764,7 +763,7 @@ include 'includes/header.php';
 
 .project-status-badge {
     padding: 4px 10px;
-    border-radius: 6px;
+
     font-size: 11px;
     font-weight: 500;
     white-space: nowrap;
@@ -1300,7 +1299,7 @@ include 'includes/header.php';
 
 <div class="dashboard-layout">
     <!-- Mobile Sidebar Toggle Button -->
-    <button class="mobile-sidebar-toggle" onclick="toggleMobileSidebar()" style="display: none;">
+    <button class="mobile-sidebar-toggle d-none" onclick="toggleMobileSidebar()">
         <i class="fas fa-folder"></i>
     </button>
     
@@ -1363,36 +1362,34 @@ include 'includes/header.php';
         
         <?php if (empty($projects)): ?>
             <!-- Empty State: No Projects -->
-            <div class="premium-card" style="text-align: center; padding: 64px 24px; margin-top: 24px;">
+            <div class="premium-card empty-state mt-24">
                 <?php if (isSuperAdmin() || isOrgAdmin() || isAdmin()): ?>
                     <!-- Admin View: Can create projects -->
-                    <i class="fas fa-folder-plus" style="font-size: 64px; color: var(--blue); margin-bottom: 24px; opacity: 0.7;"></i>
-                    <h2 style="font-size: 24px; font-weight: 600; color: var(--text-primary); margin: 0 0 12px 0;">No Projects Yet</h2>
-                    <p style="font-size: 16px; color: var(--text-secondary); margin: 0 0 32px 0; max-width: 500px; margin-left: auto; margin-right: auto;">
+                    <i class="fas fa-folder-plus empty-state-icon"></i>
+                    <h2 class="empty-state-title">No Projects Yet</h2>
+                    <p class="empty-state-text">
                         Get started by creating your first project. Projects help you organize and track your tasks efficiently.
                     </p>
-                    <button type="button" onclick="openAddProjectModal()" 
-                            style="display: inline-flex; align-items: center; gap: 8px; padding: 12px 24px; background: var(--blue); color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: 500; cursor: pointer; transition: all 0.2s; box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);">
+                    <button type="button" onclick="openAddProjectModal()" class="btn-action">
                         <i class="fas fa-plus"></i>
                         <span>Add Your First Project</span>
                     </button>
                 <?php else: ?>
                     <!-- Non-Admin View: Request project assignment -->
-                    <i class="fas fa-folder-open" style="font-size: 64px; color: var(--blue); margin-bottom: 24px; opacity: 0.7;"></i>
-                    <h2 style="font-size: 24px; font-weight: 600; color: var(--text-primary); margin: 0 0 12px 0;">No Projects Assigned</h2>
-                    <p style="font-size: 16px; color: var(--text-secondary); margin: 0 0 24px 0; max-width: 500px; margin-left: auto; margin-right: auto;">
+                    <i class="fas fa-folder-open empty-state-icon"></i>
+                    <h2 class="empty-state-title">No Projects Assigned</h2>
+                    <p class="empty-state-text mb-24">
                         You don't have any projects assigned yet. Request project assignment from your administrator to get started.
                     </p>
-                    <form method="POST" action="" style="display: inline-block;">
+                    <form method="POST" action="" class="d-inline-block">
                         <input type="hidden" name="request_project_assignment" value="1">
-                        <button type="submit" 
-                                style="display: inline-flex; align-items: center; gap: 8px; padding: 12px 24px; background: var(--blue); color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: 500; cursor: pointer; transition: all 0.2s; box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);">
+                        <button type="submit" class="btn-action">
                             <i class="fas fa-paper-plane"></i>
                             <span>Request Project Assignment</span>
                         </button>
                     </form>
-                    <p style="font-size: 14px; color: var(--text-secondary); margin: 24px 0 0 0; max-width: 500px; margin-left: auto; margin-right: auto;">
-                        Or contact support at <a href="mailto:support@agprimetech.com" style="color: var(--blue); text-decoration: none;">support@agprimetech.com</a>
+                    <p class="empty-state-text-small">
+                        Or contact support at <a href="mailto:support@agprimetech.com" class="link-primary">support@agprimetech.com</a>
                     </p>
                 <?php endif; ?>
             </div>
@@ -1456,7 +1453,7 @@ include 'includes/header.php';
                     </button>
                     <?php if ($selected_project_id): ?>
                         <a href="tasks?project_id=<?php echo $selected_project_id; ?>" class="btn-view-tasks"
-                           style="display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; background: var(--blue); color: white;  text-decoration: none; font-size: 14px; font-weight: 500; transition: all 0.2s;">
+                           class="btn-action-sm">
                             <i class="fas fa-tasks"></i>
                             <span class="btn-text">View Tasks</span>
                         </a>
@@ -1526,9 +1523,9 @@ include 'includes/header.php';
                                         onmouseout="this.style.opacity='1'; this.style.strokeWidth='<?php echo $stroke_width; ?>'; hideTooltip()"/>
                                 <?php endforeach; ?>
                             </svg>
-                            <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; pointer-events: none;">
-                                <div style="font-size: 28px; font-weight: 700; color: var(--text-primary); line-height: 1.2;"><?php echo $overall_total; ?></div>
-                                <div style="font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px;">Total Tasks</div>
+                            <div class="position-absolute" style="top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; pointer-events: none;">
+                                <div class="text-3xl font-bold text-primary" style="line-height: 1.2;"><?php echo $overall_total; ?></div>
+                                <div class="text-xs text-secondary tracking-tight" style="text-transform: uppercase; margin-top: 4px;">Total Tasks</div>
                             </div>
                         </div>
                     </div>
@@ -1581,7 +1578,7 @@ include 'includes/header.php';
                 </script>    
             <!-- Left: Progress Bars + Bar Chart Combined -->
             <div>
-                    <h3 style="font-size: 13px; font-weight: 600; color: var(--text-secondary); margin: 0 0 16px 0; text-transform: uppercase; letter-spacing: 0.5px;">Task Distribution</h3>
+                    <h3 class="chart-title mb-16">Task Distribution</h3>
                     <!-- Progress Bars -->
                     <div style="margin-bottom: 24px;">
                         <?php foreach ($statuses as $status): 
@@ -1702,7 +1699,7 @@ include 'includes/header.php';
         
         <!-- Additional Dashboard Sections -->
         <?php if ($selected_project_id): ?>
-        <div class="dashboard-additional-sections" style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 24px;">
+        <div class="dashboard-additional-sections d-grid" style="grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 24px;">
             <!-- Left Column: Upcoming Deadlines -->
             <div style="display: flex; flex-direction: column; gap: 24px;">
                 <!-- Upcoming Deadlines -->

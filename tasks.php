@@ -1355,7 +1355,6 @@ include 'includes/header.php';
     align-items: center;
     gap: 8px;
     padding: 8px 16px;
-    border-radius: 6px;
     font-size: 14px;
     font-weight: 500;
     color: var(--text-primary);
@@ -1396,7 +1395,6 @@ include 'includes/header.php';
     background: var(--blue);
     color: white;
     border: none;
-    border-radius: 6px;
     font-size: 14px;
     font-weight: 500;
     text-decoration: none;
@@ -1426,7 +1424,6 @@ include 'includes/header.php';
     width: 100%;
     padding: 10px 40px 10px 40px;
     border: 1px solid var(--border-color);
-    border-radius: 6px;
     font-size: 14px;
     background: var(--card-bg);
     color: var(--text-primary);
@@ -1451,7 +1448,6 @@ include 'includes/header.php';
 .filter-dropdown {
     padding: 10px 36px 10px 12px;
     border: 1px solid var(--border-color);
-    border-radius: 6px;
     font-size: 14px;
     background: var(--card-bg);
     color: var(--text-primary);
@@ -1476,7 +1472,6 @@ include 'includes/header.php';
 
 .tasks-table-container {
     background: var(--card-bg);
-    border-radius: 10px;
     border: 1px solid var(--border-color);
     box-shadow: 0 1px 3px var(--shadow);
     overflow: hidden;
@@ -1553,7 +1548,7 @@ include 'includes/header.php';
     align-items: center;
     gap: 6px;
     padding: 4px 10px;
-    border-radius: 6px;
+    
     font-size: 12px;
     font-weight: 500;
 }
@@ -1604,7 +1599,7 @@ include 'includes/header.php';
     display: inline-flex;
     align-items: center;
     padding: 4px 10px;
-    border-radius: 6px;
+    
     font-size: 12px;
     font-weight: 500;
 }
@@ -1669,7 +1664,7 @@ include 'includes/header.php';
     width: 32px;
     height: 32px;
     border: 1px solid var(--border-color);
-    border-radius: 6px;
+    
     background: var(--card-bg);
     color: var(--text-primary);
     text-decoration: none;
@@ -1998,7 +1993,7 @@ include 'includes/header.php';
                                     <select name="status_id" 
                                             onchange="this.form.submit();" 
                                             onclick="event.stopPropagation();"
-                                            style="padding: 4px 24px 4px 8px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 12px; font-weight: 500; cursor: pointer; background: <?php echo htmlspecialchars($status_color); ?>; color: white; appearance: none; background-image: url('data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 12 12\'%3E%3Cpath fill=\'%23ffffff\' d=\'M6 9L1 4h10z\'/%3E%3C/svg%3E'); background-repeat: no-repeat; background-position: right 8px center; min-width: 110px;">
+                                            style="padding: 4px 24px 4px 8px; border: 1px solid var(--border-color);  font-size: 12px; font-weight: 500; cursor: pointer; background: <?php echo htmlspecialchars($status_color); ?>; color: white; appearance: none; background-image: url('data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 12 12\'%3E%3Cpath fill=\'%23ffffff\' d=\'M6 9L1 4h10z\'/%3E%3C/svg%3E'); background-repeat: no-repeat; background-position: right 8px center; min-width: 110px;">
                                         <?php foreach ($statuses as $status_option): ?>
                                             <option value="<?php echo $status_option['id']; ?>" <?php echo ($task_status_id == $status_option['id']) ? 'selected' : ''; ?>>
                                                 <?php echo htmlspecialchars($status_option['name']); ?>
@@ -2060,21 +2055,21 @@ include 'includes/header.php';
                 <div style="margin-bottom: 20px;">
                     <label style="display: block; margin-bottom: 8px; font-weight: 500; color: var(--text-primary); font-size: 14px;">Name <span style="color: var(--chart-red);">*</span></label>
                     <input type="text" name="title" required 
-                           style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px;"
+                           style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color);  font-size: 14px;"
                            placeholder="Enter task name">
                 </div>
                 
                 <div style="margin-bottom: 20px;">
                     <label style="display: block; margin-bottom: 8px; font-weight: 500; color: var(--text-primary); font-size: 14px;">Description</label>
                     <textarea name="description" rows="4" 
-                              style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; resize: vertical;"
+                              style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color);  font-size: 14px; resize: vertical;"
                               placeholder="Enter task description"></textarea>
                 </div>
                 
                 <div style="margin-bottom: 20px;">
                     <label style="display: block; margin-bottom: 8px; font-weight: 500; color: var(--text-primary); font-size: 14px;">Type</label>
                     <select name="type" required 
-                            style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; background: white;">
+                            style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color);  font-size: 14px; background: white;">
                         <option value="Task">Task</option>
                         <option value="Bug">Bug</option>
                         <option value="Improvement">Improvement</option>
@@ -2084,7 +2079,7 @@ include 'includes/header.php';
                 <div style="margin-bottom: 20px;">
                     <label style="display: block; margin-bottom: 8px; font-weight: 500; color: var(--text-primary); font-size: 14px;">Project</label>
                     <select name="project_id" required 
-                            style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; background: white;">
+                            style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color);  font-size: 14px; background: white;">
                         <option value="">Select Project</option>
                         <?php foreach ($projects as $proj): ?>
                             <option value="<?php echo $proj['id']; ?>" <?php echo (!empty($filter_project) && in_array($proj['id'], $filter_project)) ? 'selected' : ''; ?>>
@@ -2099,11 +2094,11 @@ include 'includes/header.php';
             </div>
             <div class="modal-footer" style="padding: 16px 24px; border-top: 1px solid var(--border-color); display: flex; justify-content: flex-end; gap: 12px;">
                 <button type="button" onclick="closeAddTaskModal()" 
-                        style="padding: 10px 20px; border: 1px solid var(--border-color); background: white; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500; color: var(--text-primary);">
+                        style="padding: 10px 20px; border: 1px solid var(--border-color); background: white;  cursor: pointer; font-size: 14px; font-weight: 500; color: var(--text-primary);">
                     Cancel
                 </button>
                 <button type="submit" 
-                        style="padding: 10px 20px; border: none; background: var(--blue); color: white; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500;">
+                        style="padding: 10px 20px; border: none; background: var(--blue); color: white;  cursor: pointer; font-size: 14px; font-weight: 500;">
                     Create Task
                 </button>
             </div>

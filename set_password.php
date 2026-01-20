@@ -148,7 +148,7 @@ if (empty($token)) {
 </head>
 <body class="login-page">
     <div class="login-container">
-        <div class="login-box" style="max-width: 500px;">
+        <div class="login-box max-w-500">
             <h1>Set Your Password</h1>
             <?php if (isset($token_data)): ?>
                 <p class="subtitle">Welcome to <strong><?php echo htmlspecialchars($token_data['org_name']); ?></strong></p>
@@ -165,7 +165,7 @@ if (empty($token)) {
                     <?php echo htmlspecialchars($success); ?>
                     <div id="countdown" style="margin-top: 10px; font-size: 14px; color: #059669;"></div>
                 </div>
-                <div style="text-align: center; margin-top: 20px;">
+                <div class="text-center mt-20">
                     <a href="index" class="btn btn-primary">Go to Login Now</a>
                 </div>
                 <script>
@@ -216,8 +216,8 @@ if (empty($token)) {
                 </form>
             <?php endif; ?>
             
-            <div style="text-align: center; margin-top: 20px;">
-                <a href="index" style="color: #667eea; text-decoration: none;">Back to Login</a>
+            <div class="text-center mt-20">
+                <a href="index" class="link-primary">Back to Login</a>
             </div>
         </div>
     </div>

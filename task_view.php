@@ -836,7 +836,7 @@ include 'includes/header.php';
     gap: 8px;
     background: #f1f5f9;
     padding: 6px 12px;
-    border-radius: 6px;
+
     font-size: 13px;
     font-weight: 600;
     color: #475569;
@@ -856,7 +856,7 @@ include 'includes/header.php';
     align-items: center;
     gap: 6px;
     padding: 6px 12px;
-    border-radius: 6px;
+
     font-size: 13px;
     font-weight: 600;
     margin-right: 8px;
@@ -1224,7 +1224,7 @@ include 'includes/header.php';
     flex: 1;
     padding: 10px 12px;
     border: 1px solid #cbd5e1;
-    border-radius: 6px;
+
     font-size: 14px;
     background: #ffffff;
     color: #1e293b;
@@ -1254,7 +1254,7 @@ include 'includes/header.php';
 .comment-form {
     background: #f8fafc;
     padding: 12px;
-    border-radius: 6px;
+
     margin-bottom: 12px;
     border: 1px solid #e2e8f0;
     position: relative;
@@ -1308,7 +1308,7 @@ include 'includes/header.php';
     gap: 8px;
     padding: 8px 10px;
     background: #ffffff;
-    border-radius: 6px;
+
     transition: all 0.15s ease;
     border: 1px solid #e2e8f0;
 }
@@ -1411,7 +1411,7 @@ include 'includes/header.php';
     margin-left: 36px;
     padding: 8px;
     background: #f8fafc;
-    border-radius: 6px;
+
     border: 1px solid #e2e8f0;
     display: none;
 }
@@ -1441,7 +1441,7 @@ include 'includes/header.php';
     position: absolute;
     background: white;
     border: 1px solid #cbd5e1;
-    border-radius: 6px;
+
     box-shadow: 0 4px 12px rgba(0,0,0,0.15);
     max-height: 200px;
     overflow-y: auto;
@@ -1523,7 +1523,7 @@ include 'includes/header.php';
 .activity-item {
     padding: 12px 16px;
     background: #f8fafc;
-    border-radius: 6px;
+
     border-left: 3px solid #cbd5e1;
     font-size: 14px;
     color: #475569;
@@ -1627,7 +1627,7 @@ body .content-wrapper:has(.task-view-page) {
     border: 1px solid var(--border-color);
     background: var(--card-bg);
     color: var(--text-primary);
-    border-radius: 6px;
+
     font-size: 14px;
     font-weight: 500;
     cursor: pointer;
@@ -1663,7 +1663,7 @@ body .content-wrapper:has(.task-view-page) {
     align-items: center;
     gap: 6px;
     padding: 6px 12px;
-    border-radius: 6px;
+
     font-size: 13px;
     font-weight: 500;
 }
@@ -1854,7 +1854,7 @@ body .content-wrapper:has(.task-view-page) {
     background: none;
     border: 1px dashed var(--border-color);
     color: var(--text-secondary);
-    border-radius: 6px;
+
     font-size: 13px;
     cursor: pointer;
     display: inline-flex;
@@ -2017,7 +2017,7 @@ body .content-wrapper:has(.task-view-page) {
     width: 100%;
     padding: 12px;
     border: 1px solid var(--border-color);
-    border-radius: 6px;
+
     font-size: 14px;
     font-family: inherit;
     resize: vertical;
@@ -2039,7 +2039,7 @@ body .content-wrapper:has(.task-view-page) {
     padding: 6px 12px;
     background: var(--page-bg);
     border: 1px solid var(--border-color);
-    border-radius: 6px;
+
     color: var(--text-secondary);
     font-size: 13px;
     cursor: pointer;
@@ -2112,7 +2112,7 @@ body .content-wrapper:has(.task-view-page) {
     align-items: center;
     justify-content: center;
     border: 1px solid var(--border-color);
-    border-radius: 6px;
+
     color: var(--text-secondary);
     cursor: pointer;
     transition: all 0.2s ease;
@@ -2126,7 +2126,7 @@ body .content-wrapper:has(.task-view-page) {
 .activity-filter {
     padding: 6px 12px;
     border: 1px solid var(--border-color);
-    border-radius: 6px;
+
     background: var(--card-bg);
     color: var(--text-primary);
     font-size: 13px;
@@ -2181,7 +2181,7 @@ body .content-wrapper:has(.task-view-page) {
     height: 100px;
     background: var(--page-bg);
     border: 1px solid var(--border-color);
-    border-radius: 6px;
+
     display: flex;
     align-items: center;
     justify-content: center;
@@ -2312,7 +2312,7 @@ body .content-wrapper:has(.task-view-page) {
         
         <!-- Save Button (disabled by default, enabled when changes detected) -->
         <button type="button" id="save-task-btn" onclick="saveAllChanges()" 
-                style="display: inline-flex; margin-left: 16px; padding: 6px 16px; background: var(--text-muted); color: white; border: none; border-radius: 6px; font-size: 13px; font-weight: 500; cursor: not-allowed; align-items: center; gap: 6px; opacity: 0.6;"
+                style="display: inline-flex; margin-left: 16px; padding: 6px 16px; background: var(--text-muted); color: white; border: none;  font-size: 13px; font-weight: 500; cursor: not-allowed; align-items: center; gap: 6px; opacity: 0.6;"
                 disabled
                 title="No changes to save">
             <i class="fas fa-save"></i>
@@ -2333,7 +2333,7 @@ body .content-wrapper:has(.task-view-page) {
             <div id="task-title-edit" style="display: none; flex: 1;">
                 <input type="text" id="task-title-input" value="<?php echo htmlspecialchars($task['title']); ?>" 
                        onblur="cancelTitleEdit()" onkeydown="handleTitleKeydown(event)"
-                       style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 24px; font-weight: 600; font-family: inherit;"
+                       style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-color);  font-size: 24px; font-weight: 600; font-family: inherit;"
                        required>
             </div>
         </div>
@@ -2374,7 +2374,7 @@ body .content-wrapper:has(.task-view-page) {
                         <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;">
                             <h3 style="font-size: 16px; font-weight: 600; color: var(--text-primary); margin: 0;">Description</h3>
                         </div>
-                        <div id="task-description-display" class="task-description-text" onclick="editDescription()" style="cursor: pointer; min-height: 100px; padding: 12px; border: 1px dashed transparent; border-radius: 6px; transition: all 0.2s;" 
+                        <div id="task-description-display" class="task-description-text" onclick="editDescription()" style="cursor: pointer; min-height: 100px; padding: 12px; border: 1px dashed transparent;  transition: all 0.2s;" 
                              onmouseover="this.style.borderColor='var(--border-color)'; this.style.background='var(--page-bg)'"
                              onmouseout="this.style.borderColor='transparent'; this.style.background='transparent'"
                              title="Click to edit">
@@ -2618,7 +2618,7 @@ body .content-wrapper:has(.task-view-page) {
                             <i class="fas <?php echo $type_icon; ?>" style="color: <?php echo $type_color; ?>; margin-right: 6px;"></i>Type
                         </label>
                         <select name="type" id="task-type" onchange="markChanged()"
-                                style="flex: 1; padding: 6px 10px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--card-bg); color: var(--text-primary); font-size: 13px; cursor: pointer; appearance: none; background-image: url('data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 12 12\'%3E%3Cpath fill=\'%236B7280\' d=\'M6 9L1 4h10z\'/%3E%3C/svg%3E'); background-repeat: no-repeat; background-position: right 12px center;">
+                                style="flex: 1; padding: 6px 10px; border: 1px solid var(--border-color);  background: var(--card-bg); color: var(--text-primary); font-size: 13px; cursor: pointer; appearance: none; background-image: url('data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 12 12\'%3E%3Cpath fill=\'%236B7280\' d=\'M6 9L1 4h10z\'/%3E%3C/svg%3E'); background-repeat: no-repeat; background-position: right 12px center;">
                             <option value="Task" <?php echo ($task['type'] == 'Task') ? 'selected' : ''; ?>>Task</option>
                             <option value="Bug" <?php echo ($task['type'] == 'Bug') ? 'selected' : ''; ?>>Bug</option>
                             <option value="Improvement" <?php echo ($task['type'] == 'Improvement') ? 'selected' : ''; ?>>Improvement</option>
@@ -2631,7 +2631,7 @@ body .content-wrapper:has(.task-view-page) {
                             <i class="fas fa-flag" style="color: <?php echo htmlspecialchars($status_color); ?>; margin-right: 6px;"></i>Status
                         </label>
                         <select name="status_id" id="task-status" onchange="updateStatusColor(); markChanged();"
-                                style="flex: 1; padding: 6px 10px; border: 1px solid var(--border-color); border-radius: 6px; background: <?php echo htmlspecialchars($status_color); ?>; color: white; font-size: 13px; font-weight: 500; cursor: pointer; appearance: none; background-image: url('data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 12 12\'%3E%3Cpath fill=\'%23ffffff\' d=\'M6 9L1 4h10z\'/%3E%3C/svg%3E'); background-repeat: no-repeat; background-position: right 12px center;">
+                                style="flex: 1; padding: 6px 10px; border: 1px solid var(--border-color);  background: <?php echo htmlspecialchars($status_color); ?>; color: white; font-size: 13px; font-weight: 500; cursor: pointer; appearance: none; background-image: url('data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 12 12\'%3E%3Cpath fill=\'%23ffffff\' d=\'M6 9L1 4h10z\'/%3E%3C/svg%3E'); background-repeat: no-repeat; background-position: right 12px center;">
                             <?php foreach ($statuses as $status_option): ?>
                                 <option value="<?php echo $status_option['id']; ?>" data-color="<?php echo htmlspecialchars($status_option['color'] ?? '#6c757d'); ?>" <?php echo ($task_status_id == $status_option['id']) ? 'selected' : ''; ?>>
                                     <?php echo htmlspecialchars($status_option['name']); ?>
@@ -2646,7 +2646,7 @@ body .content-wrapper:has(.task-view-page) {
                             <i class="fas fa-exclamation-circle" style="color: var(--chart-yellow); margin-right: 6px;"></i>Priority
                         </label>
                         <select name="priority" id="task-priority" onchange="markChanged()"
-                                style="flex: 1; padding: 6px 10px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--card-bg); color: var(--text-primary); font-size: 13px; cursor: pointer; appearance: none; background-image: url('data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 12 12\'%3E%3Cpath fill=\'%236B7280\' d=\'M6 9L1 4h10z\'/%3E%3C/svg%3E'); background-repeat: no-repeat; background-position: right 12px center;">
+                                style="flex: 1; padding: 6px 10px; border: 1px solid var(--border-color);  background: var(--card-bg); color: var(--text-primary); font-size: 13px; cursor: pointer; appearance: none; background-image: url('data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 12 12\'%3E%3Cpath fill=\'%236B7280\' d=\'M6 9L1 4h10z\'/%3E%3C/svg%3E'); background-repeat: no-repeat; background-position: right 12px center;">
                             <option value="Low" <?php echo ($priority_lower == 'low') ? 'selected' : ''; ?>>Low</option>
                             <option value="Medium" <?php echo ($priority_lower == 'medium') ? 'selected' : ''; ?>>Medium</option>
                             <option value="High" <?php echo ($priority_lower == 'high') ? 'selected' : ''; ?>>High</option>
@@ -2662,7 +2662,7 @@ body .content-wrapper:has(.task-view-page) {
                             <div style="display: flex; align-items: center; gap: 8px; flex: 1;">
                                 <input type="date" name="due_date" id="task-due-date" onchange="markChanged()"
                                        value="<?php echo $task['due_date'] ? date('Y-m-d', strtotime($task['due_date'])) : ''; ?>" 
-                                       style="flex: 1; padding: 6px 10px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 13px; background: var(--card-bg); color: var(--text-primary);">
+                                       style="flex: 1; padding: 6px 10px; border: 1px solid var(--border-color);  font-size: 13px; background: var(--card-bg); color: var(--text-primary);">
                                 <?php if ($task['due_date']): ?>
                                     <button type="button" onclick="clearDueDateField()" 
                                             style="padding: 4px 8px; background: var(--text-muted); color: white; border: none; border-radius: 4px; font-size: 11px; cursor: pointer; white-space: nowrap;"
@@ -2698,7 +2698,7 @@ body .content-wrapper:has(.task-view-page) {
                         ?>
                             <?php if (isAdmin() || isProjectManager()): ?>
                                 <select name="assignee_id" id="task-assignee" onchange="markChanged()"
-                                        style="flex: 1; padding: 6px 10px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 13px; background: var(--card-bg); color: var(--text-primary);">
+                                        style="flex: 1; padding: 6px 10px; border: 1px solid var(--border-color);  font-size: 13px; background: var(--card-bg); color: var(--text-primary);">
                                     <option value="">Change Assignee</option>
                                     <?php foreach ($users_list as $user): ?>
                                         <option value="<?php echo $user['id']; ?>" <?php echo ($task['assignee_id'] == $user['id']) ? 'selected' : ''; ?>>
@@ -2720,7 +2720,7 @@ body .content-wrapper:has(.task-view-page) {
                         <?php else: ?>
                             <?php if (isAdmin() || isProjectManager()): ?>
                                 <select name="assignee_id" id="task-assignee" onchange="markChanged()"
-                                        style="flex: 1; padding: 6px 10px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 13px; background: var(--card-bg); color: var(--text-primary);">
+                                        style="flex: 1; padding: 6px 10px; border: 1px solid var(--border-color);  font-size: 13px; background: var(--card-bg); color: var(--text-primary);">
                                     <option value="">Assign to...</option>
                                     <?php foreach ($users_list as $user): ?>
                                         <option value="<?php echo $user['id']; ?>">

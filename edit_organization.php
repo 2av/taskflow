@@ -240,7 +240,7 @@ include 'includes/header.php';
     width: 100%;
     padding: 12px 16px;
     border: 1px solid var(--border-color);
-    border-radius: 6px;
+
     font-size: 14px;
     font-family: inherit;
     background: var(--page-bg);
@@ -288,7 +288,7 @@ include 'includes/header.php';
 .btn {
     padding: 12px 24px;
     border: none;
-    border-radius: 6px;
+
     font-size: 14px;
     font-weight: 500;
     cursor: pointer;

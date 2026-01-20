@@ -208,7 +208,7 @@ include 'includes/header.php';
     width: 100%;
     padding: 10px 12px;
     border: 1px solid var(--border-color);
-    border-radius: 6px;
+
     font-size: 14px;
     background: var(--page-bg);
     color: var(--text-primary);
@@ -241,7 +241,7 @@ include 'includes/header.php';
     gap: 16px;
     padding: 16px;
     border: 1px solid var(--border-color);
-    border-radius: 6px;
+
     margin-bottom: 12px;
     background: var(--page-bg);
 }
@@ -249,7 +249,7 @@ include 'includes/header.php';
 .status-color {
     width: 40px;
     height: 40px;
-    border-radius: 6px;
+
     border: 2px solid var(--border-color);
     flex-shrink: 0;
 }
@@ -281,7 +281,7 @@ include 'includes/header.php';
     align-items: center;
     justify-content: center;
     border: 1px solid var(--border-color);
-    border-radius: 6px;
+
     background: var(--card-bg);
     color: var(--text-primary);
     cursor: pointer;
@@ -306,7 +306,7 @@ include 'includes/header.php';
     background: var(--blue);
     color: white;
     border: none;
-    border-radius: 6px;
+
     font-size: 14px;
     font-weight: 500;
     cursor: pointer;

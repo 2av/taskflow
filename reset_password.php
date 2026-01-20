@@ -323,7 +323,7 @@ if (empty($token)) {
 </head>
 <body class="login-page">
     <div class="login-container">
-        <div class="login-box" style="max-width: 500px;">
+        <div class="login-box max-w-500">
             <h1><?php echo (isset($token_type) && $token_type == 'setup') ? 'Set Your Password' : 'Reset Your Password'; ?></h1>
             <?php if (isset($token_data)): ?>
                 <?php if (isset($token_type) && $token_type == 'setup'): ?>
@@ -348,7 +348,7 @@ if (empty($token)) {
             
             <?php if ($success): ?>
                 <div class="alert alert-success"><?php echo htmlspecialchars($success); ?></div>
-                <div style="text-align: center; margin-top: 20px;">
+                <div class="text-center mt-20">
                     <a href="index" class="btn btn-primary">Go to Login</a>
                 </div>
             <?php elseif (isset($token_data)): ?>
@@ -383,7 +383,7 @@ if (empty($token)) {
                                 <i class="fas fa-eye" id="password-toggle-icon"></i>
                             </button>
                         </div>
-                        <small style="color: #666;">Minimum 6 characters</small>
+                        <small class="text-helper-small">Minimum 6 characters</small>
                     </div>
                     
                     <div class="form-group">
@@ -404,8 +404,8 @@ if (empty($token)) {
                 </form>
             <?php endif; ?>
             
-            <div style="text-align: center; margin-top: 20px;">
-                <a href="index" style="color: #667eea; text-decoration: none;">Back to Login</a>
+            <div class="text-center mt-20">
+                <a href="index" class="link-primary">Back to Login</a>
             </div>
         </div>
     </div>

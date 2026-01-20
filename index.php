@@ -65,7 +65,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             <p class="subtitle">Task & Issue Management System</p>
             
             <?php if ($error): ?>
-                <div class="alert alert-error" style="display: none;"><?php echo htmlspecialchars($error); ?></div>
+                <div class="alert alert-error d-none"><?php echo htmlspecialchars($error); ?></div>
             <?php endif; ?>
             
             <form method="POST" action="">
@@ -87,14 +87,14 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 <button type="submit" class="btn btn-primary btn-block" title="Login"><i class="fas fa-sign-in-alt"></i> Login</button>
             </form>
             
-            <div style="text-align: center; margin-top: 15px;">
-                <a href="forgot_password" style="color: #667eea; text-decoration: none; font-size: 14px;">
+            <div class="text-center mt-15">
+                <a href="forgot_password" class="link-primary text-sm">
                     <i class="fas fa-key"></i> Forgot Password?
                 </a>
             </div>
             
-            <div style="text-align: center; margin-top: 20px;">
-                <a href="register_organization" style="color: #667eea; text-decoration: none;">Register Your Organization</a>
+            <div class="text-center mt-20">
+                <a href="register_organization" class="link-primary">Register Your Organization</a>
             </div>
         </div>
     </div>

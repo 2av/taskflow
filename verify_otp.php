@@ -10,16 +10,35 @@ if (isLoggedIn()) {
 $error = '';
 $success = '';
 $email = $_POST['email'] ?? $_SESSION['pending_verification_email'] ?? $_GET['email'] ?? '';
+// If email is in session but not in current request, use session email
+if (!empty($_SESSION['pending_verification_email']) && empty($email)) {
+    $email = $_SESSION['pending_verification_email'];
+}
 $otp_verified = false;
-$show_org_form = false;
+$show_org_form = false; // Deprecated - kept for compatibility
 $org_details_submitted = false; // Track if org details were successfully submitted
 
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['verify_otp'])) {
     $otp_code = trim($_POST['otp_code'] ?? '');
-    $email = trim($_POST['email'] ?? '');
+    $email = trim($_POST['email'] ?? $_SESSION['pending_verification_email'] ?? '');
+    $org_name = trim($_POST['org_name'] ?? '');
+    $mobile = trim($_POST['mobile'] ?? '');
     
-    if (empty($otp_code) || empty($email)) {
-        $error = 'Please enter the OTP code and email address';
+    // Validate all required fields
+    if (empty($email)) {
+        $error = 'Email address is required';
+    } elseif (empty($otp_code)) {
+        $error = 'Please enter the OTP code';
+    } elseif (empty($org_name)) {
+        $error = 'Please enter your organization name';
+    } elseif (strlen($org_name) > 200) {
+        $error = 'Organization name must not exceed 200 characters';
+    } elseif (empty($mobile)) {
+        $error = 'Please enter your mobile number';
+    } elseif (!preg_match('/^[0-9]+$/', $mobile)) {
+        $error = 'Mobile number must contain only digits';
+    } elseif (strlen($mobile) > 12) {
+        $error = 'Mobile number must not exceed 21 digits';
     } elseif (strlen($otp_code) != 6 || !is_numeric($otp_code)) {
         $error = 'OTP code must be 6 digits';
     } else {
@@ -73,22 +92,107 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['verify_otp'])) {
                 // $error = "Invalid OTP code. DB: '{$db_otp}' (len: " . strlen($db_otp) . "), Submitted: '{$submitted_otp}' (len: " . strlen($submitted_otp) . ")";
                 $error = 'Invalid OTP code. Please check the code and try again.';
             } else {
-                // OTP is valid - mark as verified but DON'T create organization yet
+                // OTP is valid - create organization immediately with name and mobile
                 try {
-                    // Update temp record status to VERIFIED
-                    $stmt = $conn->prepare("UPDATE organization_temp SET account_status = 'VERIFIED' WHERE id = ?");
-                    $stmt->bind_param("i", $temp_org['id']);
+                    $conn->begin_transaction();
+                    
+                    // Update temp record with organization name and status to VERIFIED
+                    $stmt = $conn->prepare("UPDATE organization_temp SET name = ?, account_status = 'VERIFIED' WHERE id = ?");
+                    $stmt->bind_param("si", $org_name, $temp_org['id']);
                     $stmt->execute();
                     
-                    // Store verified email in session for organization details form
-                    $_SESSION['verified_email'] = $email_normalized;
-                    $_SESSION['verified_temp_id'] = $temp_org['id'];
+                    // Check if organization name already exists
+                    $check_stmt = $conn->prepare("SELECT id FROM organizations WHERE name = ? AND (account_status = 'ACTIVE' OR account_status = 'VERIFIED')");
+                    $check_stmt->bind_param("s", $org_name);
+                    $check_stmt->execute();
+                    $check_result = $check_stmt->get_result();
                     
-                    // Set flag to show organization form
-                    $show_org_form = true;
-                    $success = 'Email verified successfully! Please complete your organization details.';
+                    if ($check_result->num_rows > 0) {
+                        $error = 'Organization name already exists. Please choose a different name.';
+                        $conn->rollback();
+                    } else {
+                        // Calculate trial dates
+                        $trial_period = 12; // Default 12 months
+                        $trial_start = date('Y-m-d');
+                        $trial_end = date('Y-m-d', strtotime("+$trial_period months"));
+                        
+                        // Create organization with name, email, and mobile
+                        $mobile_value = !empty($mobile) ? $mobile : null;
+                        $stmt = $conn->prepare("INSERT INTO organizations (name, email, phone, subscription_status, trial_start_date, trial_end_date, subscription_plan, account_status, email_verified) VALUES (?, ?, ?, 'trial', ?, ?, 'Free Trial', 'VERIFIED', 1)");
+                        $stmt->bind_param("sssss", $org_name, $email_normalized, $mobile_value, $trial_start, $trial_end);
+                        $stmt->execute();
+                        $organization_id = $conn->insert_id;
+                        
+                        // Create subscription record
+                        $stmt = $conn->prepare("INSERT INTO subscriptions (organization_id, plan_name, plan_duration, start_date, end_date, amount, status, payment_status) VALUES (?, 'Free Trial', ?, ?, ?, 0.00, 'active', 'paid')");
+                        $stmt->bind_param("iiss", $organization_id, $trial_period, $trial_start, $trial_end);
+                        $stmt->execute();
+                        
+                        // Get Admin role ID
+                        $stmt = $conn->prepare("SELECT id FROM roles WHERE name = 'Admin'");
+                        $stmt->execute();
+                        $result = $stmt->get_result();
+                        $admin_role = $result->fetch_assoc();
+                        
+                        if ($admin_role) {
+                            // Create admin user with temporary password
+                            $temp_password = bin2hex(random_bytes(32));
+                            $hashed_temp_password = password_hash($temp_password, PASSWORD_DEFAULT);
+                            $temp_full_name = $org_name . ' Admin';
+                            
+                            // Check if user already exists (excluding deleted users)
+                            $check_stmt = $conn->prepare("SELECT id FROM users WHERE email = ? AND deleted = 0");
+                            $check_stmt->bind_param("s", $email_normalized);
+                            $check_stmt->execute();
+                            $check_result = $check_stmt->get_result();
+                            
+                            if ($check_result->num_rows == 0) {
+                                $stmt = $conn->prepare("INSERT INTO users (email, password, full_name, role_id, organization_id, status) VALUES (?, ?, ?, ?, ?, 'inactive')");
+                                $stmt->bind_param("sssii", $email_normalized, $hashed_temp_password, $temp_full_name, $admin_role['id'], $organization_id);
+                                $stmt->execute();
+                            }
+                        }
+                        
+                        // Generate password setup token
+                        require_once 'config/email.php';
+                        $token = bin2hex(random_bytes(32));
+                        $token_expiry = date('Y-m-d H:i:s', strtotime('+24 hours'));
+                        
+                        // Create password_tokens table if it doesn't exist
+                        $conn->query("CREATE TABLE IF NOT EXISTS password_tokens (
+                            id INT AUTO_INCREMENT PRIMARY KEY,
+                            email VARCHAR(255) NOT NULL,
+                            organization_id INT NOT NULL,
+                            token VARCHAR(64) NOT NULL,
+                            expires_at DATETIME NOT NULL,
+                            used TINYINT(1) DEFAULT 0,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            INDEX idx_token (token),
+                            INDEX idx_email (email)
+                        )");
+                        
+                        $stmt = $conn->prepare("INSERT INTO password_tokens (email, organization_id, token, expires_at) VALUES (?, ?, ?, ?)");
+                        $stmt->bind_param("siss", $email_normalized, $organization_id, $token, $token_expiry);
+                        $stmt->execute();
+                        
+                        $conn->commit();
+                        
+                        // Send password setup email
+                        if (sendPasswordSetupEmail($email_normalized, $org_name, $token)) {
+                            // Clear session
+                            unset($_SESSION['verified_email']);
+                            unset($_SESSION['verified_temp_id']);
+                            unset($_SESSION['pending_verification_email']);
+                            
+                            $org_details_submitted = true;
+                            $success = 'Organization registered successfully! Please check your email to set your password.';
+                        } else {
+                            $error = 'Organization created but email could not be sent. Please contact support.';
+                        }
+                    }
                 } catch (Exception $e) {
-                    $error = 'Error verifying OTP: ' . $e->getMessage();
+                    $conn->rollback();
+                    $error = 'Error creating organization: ' . $e->getMessage();
                 }
             }
         }
@@ -97,8 +201,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['verify_otp'])) {
     }
 }
 
-// Handle organization details submission (after OTP verification)
-if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['submit_org_details'])) {
+// Handle organization details submission (after OTP verification) - DEPRECATED, now handled in verify_otp above
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['submit_org_details']) && false) {
     $org_name = trim($_POST['org_name'] ?? '');
     $website = trim($_POST['website'] ?? '');
     $verified_email = $_SESSION['verified_email'] ?? '';
@@ -238,31 +342,10 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['submit_org_details']))
     }
 }
 
-// Check if OTP is already verified (show organization form)
-// Only show form if email is verified AND temp record status is VERIFIED
-// BUT don't show if org details were already submitted
-if (isset($_SESSION['verified_email']) && !$org_details_submitted) {
-    $conn = getDBConnection();
-    $verified_email_check = $_SESSION['verified_email'];
-    
-    // Verify that the temp record actually has VERIFIED status
-    $stmt = $conn->prepare("SELECT id, account_status FROM organization_temp WHERE email = ? AND account_status = 'VERIFIED' LIMIT 1");
-    $stmt->bind_param("s", $verified_email_check);
-    $stmt->execute();
-    $result = $stmt->get_result();
-    $verified_record = $result->fetch_assoc();
-    
-    if ($verified_record) {
-        // Only show form if temp record is actually VERIFIED
-        $show_org_form = true;
-        $email = $verified_email_check;
-    } else {
-        // Clear invalid session
-        unset($_SESSION['verified_email']);
-        unset($_SESSION['verified_temp_id']);
-    }
-    
-    $conn->close();
+// Check if OTP is already verified (show organization form) - DEPRECATED, now all fields on one page
+// This section is kept for backward compatibility but should not be reached
+if (isset($_SESSION['verified_email']) && !$org_details_submitted && false) {
+    // This code path is no longer used - all fields are now on the OTP page
 }
 
 // Handle resend OTP
@@ -317,7 +400,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['resend_otp'])) {
 </head>
 <body class="login-page">
     <div class="login-container">
-        <div class="login-box" style="max-width: <?php echo ($show_org_form && !$org_details_submitted) ? '600px' : '500px'; ?>;">
+        <div class="login-box max-w-600">
             <?php if ($org_details_submitted): ?>
                 <h1>Registration Complete!</h1>
                 <p class="subtitle">Your organization has been successfully registered</p>
@@ -326,46 +409,12 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['resend_otp'])) {
                     <div class="alert alert-success"><?php echo htmlspecialchars($success); ?></div>
                 <?php endif; ?>
                 
-                <div style="text-align: center; margin-top: 20px;">
+                <div class="text-center mt-20">
                     <a href="index" class="btn btn-primary">Go to Login</a>
                 </div>
-            <?php elseif ($show_org_form): ?>
-                <h1>Complete Your Registration</h1>
-                <p class="subtitle">Email verified! Please provide your organization details</p>
-                
-                <?php if ($error): ?>
-                    <div class="alert alert-error"><?php echo htmlspecialchars($error); ?></div>
-                <?php endif; ?>
-                
-                <?php if ($success): ?>
-                    <div class="alert alert-success"><?php echo htmlspecialchars($success); ?></div>
-                <?php endif; ?>
-                
-                <form method="POST" action="">
-                    <input type="hidden" name="submit_org_details" value="1">
-                    
-                    <div class="form-group">
-                        <label for="org_name">Organization Name *</label>
-                        <input type="text" id="org_name" name="org_name" required autofocus 
-                               value="<?php echo htmlspecialchars($_POST['org_name'] ?? ''); ?>"
-                               placeholder="Enter your organization name">
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="website">Website</label>
-                        <input type="url" id="website" name="website" 
-                               value="<?php echo htmlspecialchars($_POST['website'] ?? ''); ?>"
-                               placeholder="https://example.com">
-                        <small style="color: #666;">Optional</small>
-                    </div>
-                    
-                    <button type="submit" class="btn btn-primary btn-block" title="Continue">
-                        <i class="fas fa-arrow-right"></i> Continue
-                    </button>
-                </form>
             <?php else: ?>
                 <h1>Verify Your Email</h1>
-                <p class="subtitle">Enter the 6-digit code sent to your email</p>
+                <p class="subtitle">Enter the verification code sent to your email</p>
                 
                 <?php if ($error): ?>
                     <div class="alert alert-error"><?php echo htmlspecialchars($error); ?></div>
@@ -375,40 +424,103 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['resend_otp'])) {
                     <div class="alert alert-success"><?php echo htmlspecialchars($success); ?></div>
                 <?php endif; ?>
                 
-                <form method="POST" action="">
-                    <div class="form-group">
-                        <label for="email">Email Address *</label>
-                        <input type="email" id="email" name="email" required 
-                               value="<?php echo htmlspecialchars($email); ?>"
-                               placeholder="Enter your email address">
-                    </div>
+                <form method="POST" action="" id="verifyOTPForm" onsubmit="return validateForm()">
+                    <input type="hidden" name="email" id="email" value="<?php echo htmlspecialchars($email); ?>" required>
                     
                     <div class="form-group">
                         <label for="otp_code">OTP Code *</label>
                         <input type="text" id="otp_code" name="otp_code" required 
                                maxlength="6" pattern="[0-9]{6}"
                                placeholder="Enter 6-digit code"
-                               style="text-align: center; font-size: 24px; letter-spacing: 8px; font-family: monospace;">
-                        <small style="color: #666;">Check your email for the verification code</small>
+                               style="text-align: center; font-size: 24px; letter-spacing: 1px; font-family: monospace;">
+                        <small style="color: #666; display: flex; align-items: center; gap: 8px;">
+                            Code sent to your email
+                            <button type="button" onclick="resendOTP()" 
+                                    style="background: none; border: none; color: #667eea; cursor: pointer; padding: 0; margin: 0; display: inline-flex; align-items: center; text-decoration: none;"
+                                    title="Resend OTP Code">
+                                <i class="fas fa-redo" style="font-size: 12px;"></i>
+                            </button>
+                        </small>
                     </div>
                     
-                    <button type="submit" name="verify_otp" class="btn btn-primary btn-block" title="Verify OTP">
-                        <i class="fas fa-check-circle"></i> Verify Email
+                    <div class="form-group">
+                        <label for="org_name">Organization Name *</label>
+                        <input type="text" id="org_name" name="org_name" required 
+                               maxlength="200"
+                               value="<?php echo htmlspecialchars($_POST['org_name'] ?? ''); ?>"
+                               placeholder="Enter your organization name">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="mobile">Mobile Number *</label>
+                        <input type="tel" id="mobile" name="mobile" required 
+                               maxlength="12" pattern="[0-9]+" inputmode="numeric"
+                               value="<?php echo htmlspecialchars($_POST['mobile'] ?? ''); ?>"
+                               placeholder="Enter your mobile number"
+                               onkeypress="return /[0-9]/i.test(event.key)">
+                    </div>
+                    
+                    <button type="submit" name="verify_otp" class="btn btn-primary btn-block" title="Complete Registration">
+                        <i class="fas fa-check-circle"></i> Complete Registration
                     </button>
                 </form>
                 
-                <form method="POST" action="" style="margin-top: 15px;">
-                    <input type="hidden" name="email" value="<?php echo htmlspecialchars($email); ?>">
-                    <button type="submit" name="resend_otp" class="btn btn-secondary btn-block" title="Resend OTP">
-                        <i class="fas fa-redo"></i> Resend OTP Code
-                    </button>
+                <form method="POST" action="" id="resendOTPForm" class="d-none">
+                    <input type="hidden" name="email" id="resendEmail" value="<?php echo htmlspecialchars($email); ?>">
+                    <input type="hidden" name="resend_otp" value="1">
                 </form>
             <?php endif; ?>
             
-            <div style="text-align: center; margin-top: 20px;">
-                <a href="register_organization" style="color: #667eea; text-decoration: none;">Back to Registration</a>
+            <div class="text-center mt-20">
+                <a href="register_organization" class="link-primary">Back to Registration</a>
             </div>
         </div>
     </div>
+    <script>
+        function resendOTP() {
+            document.getElementById('resendOTPForm').submit();
+        }
+        
+        function validateForm() {
+            var email = document.getElementById('email').value;
+            var otp_code = document.getElementById('otp_code').value;
+            var org_name = document.getElementById('org_name').value;
+            var mobile = document.getElementById('mobile').value;
+            
+            if (!email || !email.trim()) {
+                alert('Email address is required');
+                return false;
+            }
+            if (!otp_code || !otp_code.trim()) {
+                alert('OTP code is required');
+                return false;
+            }
+            if (otp_code.length !== 6 || !/^\d+$/.test(otp_code)) {
+                alert('OTP code must be 6 digits');
+                return false;
+            }
+            if (!org_name || !org_name.trim()) {
+                alert('Organization name is required');
+                return false;
+            }
+            if (org_name.length > 200) {
+                alert('Organization name must not exceed 200 characters');
+                return false;
+            }
+            if (!mobile || !mobile.trim()) {
+                alert('Mobile number is required');
+                return false;
+            }
+            if (!/^\d+$/.test(mobile)) {
+                alert('Mobile number must contain only digits');
+                return false;
+            }
+            if (mobile.length > 21) {
+                alert('Mobile number must not exceed 21 digits');
+                return false;
+            }
+            return true;
+        }
+    </script>
 </body>
 </html>

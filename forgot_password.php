@@ -196,7 +196,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
 </head>
 <body class="login-page">
     <div class="login-container">
-        <div class="login-box" style="max-width: 500px;">
+        <div class="login-box max-w-500">
             <h1>Forgot Password</h1>
             <p class="subtitle">Enter your email address to receive a password reset link</p>
             
@@ -216,7 +216,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                         <input type="email" id="email" name="email" required autofocus 
                                value="<?php echo htmlspecialchars($_POST['email'] ?? ''); ?>"
                                placeholder="Enter your email address">
-                        <small style="color: #666;">We'll send you a link to reset your password</small>
+                        <small class="text-helper-small">We'll send you a link to reset your password</small>
                     </div>
                     
                     <button type="submit" class="btn btn-primary btn-block" title="Send Reset Link">
@@ -225,7 +225,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 </form>
                 
                 <div style="text-align: center; margin-top: 20px;">
-                    <a href="index" style="color: #667eea; text-decoration: none;">
+                    <a href="index" class="link-primary">
                         <i class="fas fa-arrow-left"></i> Back to Login
                     </a>
                 </div>

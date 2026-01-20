@@ -66,9 +66,10 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 if ($stmt->execute()) {
                     // Send OTP email
                     if (sendOTPVerificationEmail($org_email_normalized, 'Your Organization', $otp_code)) {
-                        $success = 'OTP code has been sent to your email address. Please check your inbox.';
-                        // Store email in session for verification page
+                        // Store email in session and redirect directly to OTP page
                         $_SESSION['pending_verification_email'] = $org_email_normalized;
+                        header('Location: verify_otp?email=' . urlencode($org_email_normalized));
+                        exit();
                     } else {
                         $error = 'Registration successful but email could not be sent. Please contact support.';
                     }
@@ -95,7 +96,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
 </head>
 <body class="login-page">
     <div class="login-container">
-        <div class="login-box" style="max-width: 600px;">
+        <div class="login-box max-w-600">
             <h1>Register Your Organization</h1>
             <p class="subtitle">Enter your email to get started</p>
             
@@ -103,12 +104,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 <div class="alert alert-error"><?php echo htmlspecialchars($error); ?></div>
             <?php endif; ?>
             
-            <?php if ($success): ?>
-                <div class="alert alert-success"><?php echo htmlspecialchars($success); ?></div>
-                <div style="text-align: center; margin-top: 20px;">
-                    <a href="verify_otp" class="btn btn-primary">Verify Email</a>
-                </div>
-            <?php else: ?>
+            <?php if (!$error): ?>
                 <form method="POST" action="">
                     <div class="form-group">
                         <label for="org_email">Email Address *</label>
@@ -123,8 +119,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                     </button>
                 </form>
                 
-                <div style="text-align: center; margin-top: 20px;">
-                    <a href="index" style="color: #667eea; text-decoration: none;">Already have an account? Login</a>
+                <div class="text-center mt-20">
+                    <a href="index" class="link-primary">Already have an account? Login</a>
                 </div>
             <?php endif; ?>
         </div>
