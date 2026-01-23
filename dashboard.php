@@ -63,6 +63,9 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['create_project'])) {
                     $stmt3->execute();
                 }
                 
+                // Invalidate dashboard cache when project is created
+                invalidateDashboardCache();
+                
                 // Refresh the page to show the new project
                 header('Location: dashboard?project_created=1');
                 exit();
@@ -696,11 +699,16 @@ include 'includes/header.php';
     background: var(--page-bg);
     border-radius: 12px;
     flex-shrink: 0;
+    white-space: nowrap;
 }
 
 .project-item.active .project-item-count {
     background: var(--blue);
     color: white;
+}
+
+.project-item.active span[style*="font-size: 11px"] {
+    color: var(--blue-dark) !important;
 }
 
 .dashboard-main {
@@ -1348,6 +1356,24 @@ include 'includes/header.php';
                     $is_active = $selected_project_id == $project['id'];
                     $total_tasks = intval($project['total_tasks']);
                     
+                    // Calculate completion percentage for this project
+                    $project_completion = 0;
+                    if ($total_tasks > 0) {
+                        $done_count = 0;
+                        foreach ($statuses as $status) {
+                            $status_key = strtolower(str_replace(' ', '_', $status['name']));
+                            $status_count = intval($project[$status_key . '_count'] ?? 0);
+                            $status_name_lower = strtolower($status['name']);
+                            // Check if this is a "done" status
+                            if (strpos($status_name_lower, 'done') !== false || 
+                                strpos($status_name_lower, 'complete') !== false ||
+                                strpos($status_name_lower, 'closed') !== false) {
+                                $done_count += $status_count;
+                            }
+                        }
+                        $project_completion = round(($done_count / $total_tasks) * 100, 1);
+                    }
+                    
                     // Determine dot color based on project status
                     $status_lower = strtolower($project['status'] ?? '');
                     $dot_color = 'var(--chart-green)'; // default green
@@ -1364,7 +1390,10 @@ include 'includes/header.php';
                             <div class="project-item-icon" style="background: <?php echo $dot_color; ?>;"></div>
                             <span class="project-item-name"><?php echo htmlspecialchars($project['name']); ?></span>
                         </div>
-                        <span class="project-item-count"><?php echo $total_tasks; ?></span>
+                        <div style="display: flex; flex-direction: row; align-items: flex-end; gap: 2px;">
+                            <span class="project-item-count">(<?php echo $total_tasks; ?>)</span>
+                            <span style="font-size: 11px; font-weight: 500; color: var(--text-secondary);"><?php echo $project_completion; ?>%</span>
+                        </div>
                     </a>
                 <?php endforeach; ?>
             <?php endif; ?>
@@ -2105,83 +2134,35 @@ include 'includes/header.php';
     </div>
 </div>
 
+<link href="https://cdn.quilljs.com/1.3.6/quill.snow.css" rel="stylesheet">
+<script src="https://cdn.quilljs.com/1.3.6/quill.js"></script>
 <!-- Add Task Modal -->
 <div id="addTaskModal" class="modal" style="display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.5);">
-    <div class="modal-content" style="background-color: var(--card-bg); margin: 5% auto; padding: 0; border: 1px solid var(--border-color); border-radius: 12px; width: 90%; max-width: 600px; box-shadow: 0 4px 20px rgba(0,0,0,0.15);">
+    <div class="modal-content" style="background-color: var(--card-bg); margin: 5% auto; padding: 0; border: 1px solid var(--border-color); border-radius: 12px; width: 90%; max-width: 600px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); max-height: 90vh; overflow-y: auto;">
         <div class="modal-header" style="display: flex; align-items: center; justify-content: space-between; padding: 20px 24px; border-bottom: 1px solid var(--border-color);">
-            <h2 style="margin: 0; font-size: 20px; font-weight: 600; color: var(--text-primary);">Add New Task</h2>
+            <?php $add_task_project_name = isset($selected_project['name']) ? $selected_project['name'] : (isset($projects[0]['name']) ? $projects[0]['name'] : null); ?>
+            <h2 style="margin: 0; font-size: 20px; font-weight: 600; color: var(--text-primary);">Add New Task<?php if (!empty($add_task_project_name)): ?> (<?php echo htmlspecialchars($add_task_project_name); ?>)<?php endif; ?></h2>
             <button class="close" onclick="closeAddTaskModal()" style="background: none; border: none; font-size: 24px; cursor: pointer; color: var(--text-muted); padding: 0; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;">&times;</button>
         </div>
-        <form method="POST" action="tasks" id="addTaskForm">
+        <form method="POST" action="tasks" id="addTaskForm" onsubmit="return handleAddTaskFormSubmit(event)">
             <input type="hidden" name="create_task" value="1">
             <div class="modal-body" style="padding: 24px;">
                 <div style="margin-bottom: 20px;">
-                    <label style="display: block; margin-bottom: 8px; font-weight: 500; color: var(--text-primary); font-size: 14px;">Name <span style="color: var(--chart-red);">*</span></label>
+                    <label style="display: block; margin-bottom: 8px; font-weight: 500; color: var(--text-primary); font-size: 14px;">Title <span style="color: var(--chart-red);">*</span></label>
                     <input type="text" name="title" required 
                            style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; box-sizing: border-box;"
-                           placeholder="Enter task name">
+                           placeholder="Enter task title">
                 </div>
                 
                 <div style="margin-bottom: 20px;">
-                    <label style="display: block; margin-bottom: 8px; font-weight: 500; color: var(--text-primary); font-size: 14px;">Description</label>
-                    <textarea name="description" rows="4" 
-                              style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; resize: vertical; box-sizing: border-box; font-family: inherit;"
-                              placeholder="Enter task description"></textarea>
+                    <label style="display: block; margin-bottom: 8px; font-weight: 500; color: var(--text-primary); font-size: 14px;">Description <span style="color: var(--chart-red);">*</span></label>
+                    <div id="add-task-description-editor" style="min-height: 180px; background: white; border: 1px solid var(--border-color); border-radius: 6px;"></div>
+                    <input type="hidden" name="description" id="add-task-description-input">
                 </div>
                 
-                <div style="margin-bottom: 20px;">
-                    <label style="display: block; margin-bottom: 8px; font-weight: 500; color: var(--text-primary); font-size: 14px;">Type</label>
-                    <select name="type" required 
-                            style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; background: white; box-sizing: border-box;">
-                        <option value="Task">Task</option>
-                        <option value="Bug">Bug</option>
-                        <option value="Improvement">Improvement</option>
-                    </select>
-                </div>
-                
-                <div style="margin-bottom: 20px;">
-                    <label style="display: block; margin-bottom: 8px; font-weight: 500; color: var(--text-primary); font-size: 14px;">Project <span style="color: var(--chart-red);">*</span></label>
-                    <select name="project_id" required 
-                            style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; background: white; box-sizing: border-box;">
-                        <option value="">Select Project</option>
-                        <?php foreach ($projects as $proj): ?>
-                            <option value="<?php echo $proj['id']; ?>" <?php echo ($selected_project_id == $proj['id']) ? 'selected' : ''; ?>>
-                                <?php echo htmlspecialchars($proj['name']); ?>
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-                
-                <div style="margin-bottom: 20px;">
-                    <label style="display: block; margin-bottom: 8px; font-weight: 500; color: var(--text-primary); font-size: 14px;">Priority</label>
-                    <select name="priority" 
-                            style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; background: white; box-sizing: border-box;">
-                        <option value="Low">Low</option>
-                        <option value="Medium" selected>Medium</option>
-                        <option value="High">High</option>
-                    </select>
-                </div>
-                
-                <div style="margin-bottom: 20px;">
-                    <label style="display: block; margin-bottom: 8px; font-weight: 500; color: var(--text-primary); font-size: 14px;">Assignee</label>
-                    <select name="assignee_id" 
-                            style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; background: white; box-sizing: border-box;">
-                        <option value="">Unassigned</option>
-                        <?php foreach ($users_list as $user): ?>
-                            <option value="<?php echo $user['id']; ?>">
-                                <?php echo htmlspecialchars($user['full_name']); ?>
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-                
-                <div style="margin-bottom: 20px;">
-                    <label style="display: block; margin-bottom: 8px; font-weight: 500; color: var(--text-primary); font-size: 14px;">Due Date</label>
-                    <input type="date" name="due_date" 
-                           style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; box-sizing: border-box;">
-                </div>
-                
-                <input type="hidden" name="status" value="To Do">
+                <input type="hidden" name="project_id" value="<?php echo (int)($selected_project_id ?? (isset($projects[0]['id']) ? $projects[0]['id'] : 0)); ?>">
+                <input type="hidden" name="type" value="Task">
+                <input type="hidden" name="priority" value="Medium">
             </div>
             <div class="modal-footer" style="padding: 16px 24px; border-top: 1px solid var(--border-color); display: flex; justify-content: flex-end; gap: 12px;">
                 <button type="button" onclick="closeAddTaskModal()" 
@@ -2203,10 +2184,75 @@ function openAddTaskModal() {
     const modal = document.getElementById('addTaskModal');
     if (modal) {
         modal.style.display = 'block';
-        document.body.style.overflow = 'hidden'; // Prevent background scrolling
+        document.body.style.overflow = 'hidden';
+        if (typeof Quill !== 'undefined' && !window.addTaskQuill) {
+            const el = document.getElementById('add-task-description-editor');
+            if (el && !el.querySelector('.ql-container')) {
+                window.addTaskQuill = new Quill(el, {
+                    theme: 'snow',
+                    modules: { toolbar: [['bold','italic','underline'],['link','image'],['clean']] },
+                    placeholder: 'Enter task description...'
+                });
+                const t = window.addTaskQuill.getModule('toolbar');
+                t.addHandler('image', function() {
+                    const i = document.createElement('input');
+                    i.type = 'file'; i.accept = 'image/*'; i.click();
+                    i.onchange = async () => {
+                        const f = i.files[0];
+                        if (f) try {
+                            const url = await uploadImageForAddTask(f);
+                            const r = window.addTaskQuill.getSelection(true) || { index: window.addTaskQuill.getLength() - 1, length: 0 };
+                            window.addTaskQuill.insertEmbed(r.index, 'image', url);
+                            window.addTaskQuill.setSelection(r.index + 1);
+                        } catch (e) { alert('Upload failed: ' + e.message); }
+                    };
+                });
+                window.addTaskQuill.root.addEventListener('paste', async function(ev) {
+                    for (let j = 0; j < (ev.clipboardData.items || []).length; j++) {
+                        const it = ev.clipboardData.items[j];
+                        if (it.type.indexOf('image') !== -1) {
+                            ev.preventDefault();
+                            const f = it.getAsFile();
+                            if (f) try {
+                                const url = await uploadImageForAddTask(f);
+                                let r = window.addTaskQuill.getSelection(true);
+                                if (!r) r = { index: Math.max(0, window.addTaskQuill.getLength() - 1), length: 0 };
+                                window.addTaskQuill.insertEmbed(r.index, 'image', url);
+                                window.addTaskQuill.setSelection(r.index + 1);
+                            } catch (e) { console.error(e); }
+                            break;
+                        }
+                    }
+                });
+            }
+        }
     } else {
         console.error('Add Task Modal not found');
     }
+}
+
+async function uploadImageForAddTask(file) {
+    if (file.size > 5 * 1024 * 1024) throw new Error('File size exceeds 5MB');
+    const fd = new FormData();
+    fd.append('upload', file);
+    fd.append('type', 'task_attachment');
+    const r = await fetch('upload.php', { method: 'POST', body: fd });
+    const j = await r.json();
+    if (j.error) throw new Error(j.error.message || 'Upload failed');
+    return j.url;
+}
+
+function handleAddTaskFormSubmit(ev) {
+    const q = window.addTaskQuill;
+    const html = (q && q.root) ? q.root.innerHTML : '';
+    const text = (html || '').replace(/<[^>]+>/g, '').trim();
+    if (!text) {
+        alert('Description is required.');
+        return false;
+    }
+    const hi = document.getElementById('add-task-description-input');
+    if (hi) hi.value = html;
+    return true;
 }
 
 function closeAddTaskModal() {
@@ -2214,18 +2260,14 @@ function closeAddTaskModal() {
     const form = document.getElementById('addTaskForm');
     if (modal) {
         modal.style.display = 'none';
-        document.body.style.overflow = ''; // Restore scrolling
+        document.body.style.overflow = '';
     }
     if (form) {
         form.reset();
-        // Re-select the project if it was pre-selected
-        <?php if ($selected_project_id): ?>
-        const projectSelect = form.querySelector('select[name="project_id"]');
-        if (projectSelect) {
-            projectSelect.value = '<?php echo $selected_project_id; ?>';
-        }
-        <?php endif; ?>
+        if (window.addTaskQuill) try { window.addTaskQuill.setText(''); } catch (_) {}
     }
+    const hi = document.getElementById('add-task-description-input');
+    if (hi) hi.value = '';
 }
 
 // Close modal when clicking outside

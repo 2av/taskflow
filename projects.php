@@ -54,6 +54,9 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['create_project'])) {
                 $stmt3->execute();
             }
             
+            // Invalidate dashboard cache when project is created
+            invalidateDashboardCache();
+            
             $message = 'Project created successfully';
             // Redirect to show success message
             header('Location: projects?created=1');
@@ -92,6 +95,9 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_project'])) {
                 $stmt2->execute();
             }
         }
+        // Invalidate dashboard cache when project is updated
+        invalidateDashboardCache();
+        
         $message = 'Project updated successfully';
         // Redirect to close modal and show success message
         header('Location: projects?updated=1');

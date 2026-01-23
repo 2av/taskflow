@@ -151,6 +151,9 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['create_task'])) {
                 $stmt2->bind_param("iis", $task_insert_id, $created_by, $action);
                 $stmt2->execute();
                 
+                // Invalidate dashboard cache when task is created
+                invalidateDashboardCache();
+                
                 header('Location: task_view?id=' . $task_insert_id);
                 exit();
             } else {
@@ -212,6 +215,9 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_task'])) {
             $stmt2->bind_param("iisss", $task_id, $user_id, $action, $old_task['priority'], $priority);
             $stmt2->execute();
         }
+        
+        // Invalidate dashboard cache when task is updated
+        invalidateDashboardCache();
         
         header('Location: task_view?id=' . $task_id);
         exit();

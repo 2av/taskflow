@@ -296,6 +296,11 @@ if (file_exists(__DIR__ . '/upload.php')) {
     require_once __DIR__ . '/upload.php';
 }
 
+// Load cache system
+if (file_exists(__DIR__ . '/cache.php')) {
+    require_once __DIR__ . '/cache.php';
+}
+
 /**
  * Get image URL from filename (GUID) - Helper function available everywhere
  * Uses local storage only

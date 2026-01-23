@@ -16,15 +16,16 @@ $status_names = array_column($statuses, 'name');
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['create_task'])) {
     $project_id = intval($_POST['project_id']);
     $title = trim($_POST['title']);
-    $description = trim($_POST['description']);
-    $type = $_POST['type'];
-    $priority = $_POST['priority'];
+    $description = trim($_POST['description'] ?? '');
+    $type = $_POST['type'] ?? 'Task';
+    $priority = $_POST['priority'] ?? 'Medium';
     $assignee_id = !empty($_POST['assignee_id']) ? intval($_POST['assignee_id']) : null;
     $due_date = !empty($_POST['due_date']) ? $_POST['due_date'] : null;
     $created_by = $_SESSION['user_id'];
     
-    if (empty($title) || empty($project_id)) {
-        $error = 'Title and project are required';
+    $desc_plain = trim(strip_tags($description));
+    if (empty($title) || empty($project_id) || $desc_plain === '') {
+        $error = 'Title, description and project are required';
     } else {
         // Verify project belongs to user's organization (unless super admin)
         if (!isSuperAdmin()) {
@@ -93,6 +94,9 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['create_task'])) {
             $stmt2->bind_param("iis", $task_insert_id, $created_by, $action);
             $stmt2->execute();
             
+            // Invalidate dashboard cache when task is created
+            invalidateDashboardCache();
+            
             $message = 'Task created successfully';
         } else {
             $error = 'Error creating task: ' . $conn->error;
@@ -147,6 +151,9 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_status_quick'])
                     $stmt2->bind_param("iisss", $task_id, $user_id, $action, $old_status_name, $new_status_name);
                     $stmt2->execute();
                     $stmt2->close();
+                    
+                    // Invalidate dashboard cache when status is changed
+                    invalidateDashboardCache();
                 }
                 $message = 'Status updated successfully';
             } else {
@@ -213,6 +220,9 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_task'])) {
             $stmt2->execute();
         }
         
+        // Invalidate dashboard cache when task is updated
+        invalidateDashboardCache();
+        
         $message = 'Task updated successfully';
     } else {
         $error = 'Error updating task';
@@ -225,6 +235,9 @@ if (isset($_GET['delete'])) {
     $stmt = $conn->prepare("DELETE FROM tasks WHERE id = ?");
     $stmt->bind_param("i", $task_id);
     if ($stmt->execute()) {
+        // Invalidate dashboard cache when task is deleted
+        invalidateDashboardCache();
+        
         $message = 'Task deleted successfully';
     } else {
         $error = 'Error deleting task';
@@ -1674,55 +1687,38 @@ include 'includes/header.php';
     </div>
 </div>
 
+<link href="https://cdn.quilljs.com/1.3.6/quill.snow.css" rel="stylesheet">
+<script src="https://cdn.quilljs.com/1.3.6/quill.js"></script>
 <!-- Add Task Modal -->
 <div id="addTaskModal" class="modal" style="display: none;">
-    <div class="modal-content" style="max-width: 600px;">
+    <div class="modal-content" style="max-width: 600px; max-height: 90vh; overflow-y: auto;">
         <div class="modal-header">
-            <h2 style="margin: 0; font-size: 20px; font-weight: 600; color: var(--text-primary);">Add New Task</h2>
+            <?php $add_task_project_name = $selected_project_name ?? (isset($projects[0]['name']) ? $projects[0]['name'] : null); ?>
+            <h2 style="margin: 0; font-size: 20px; font-weight: 600; color: var(--text-primary);">Add New Task<?php if (!empty($add_task_project_name)): ?> (<?php echo htmlspecialchars($add_task_project_name); ?>)<?php endif; ?></h2>
             <button class="close" onclick="closeAddTaskModal()" style="background: none; border: none; font-size: 24px; cursor: pointer; color: var(--text-muted);">&times;</button>
         </div>
-        <form method="POST" action="tasks" id="addTaskForm">
+        <form method="POST" action="tasks" id="addTaskForm" onsubmit="return handleAddTaskFormSubmit(event)">
             <input type="hidden" name="create_task" value="1">
             <div class="modal-body" style="padding: 24px;">
                 <div style="margin-bottom: 20px;">
-                    <label style="display: block; margin-bottom: 8px; font-weight: 500; color: var(--text-primary); font-size: 14px;">Name <span style="color: var(--chart-red);">*</span></label>
+                    <label style="display: block; margin-bottom: 8px; font-weight: 500; color: var(--text-primary); font-size: 14px;">Title <span style="color: var(--chart-red);">*</span></label>
                     <input type="text" name="title" required 
                            style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color);  font-size: 14px;"
-                           placeholder="Enter task name">
+                           placeholder="Enter task title">
                 </div>
                 
                 <div style="margin-bottom: 20px;">
-                    <label style="display: block; margin-bottom: 8px; font-weight: 500; color: var(--text-primary); font-size: 14px;">Description</label>
-                    <textarea name="description" rows="4" 
-                              style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color);  font-size: 14px; resize: vertical;"
-                              placeholder="Enter task description"></textarea>
+                    <label style="display: block; margin-bottom: 8px; font-weight: 500; color: var(--text-primary); font-size: 14px;">Description <span style="color: var(--chart-red);">*</span></label>
+                    <div id="add-task-description-editor" style="min-height: 180px; background: white; border: 1px solid var(--border-color); border-radius: 6px;"></div>
+                    <input type="hidden" name="description" id="add-task-description-input">
                 </div>
                 
-                <div style="margin-bottom: 20px;">
-                    <label style="display: block; margin-bottom: 8px; font-weight: 500; color: var(--text-primary); font-size: 14px;">Type</label>
-                    <select name="type" required 
-                            style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color);  font-size: 14px; background: white;">
-                        <option value="Task">Task</option>
-                        <option value="Bug">Bug</option>
-                        <option value="Improvement">Improvement</option>
-                    </select>
-                </div>
-                
-                <div style="margin-bottom: 20px;">
-                    <label style="display: block; margin-bottom: 8px; font-weight: 500; color: var(--text-primary); font-size: 14px;">Project</label>
-                    <select name="project_id" required 
-                            style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color);  font-size: 14px; background: white;">
-                        <option value="">Select Project</option>
-                        <?php foreach ($projects as $proj): ?>
-                            <option value="<?php echo $proj['id']; ?>" <?php echo (!empty($filter_project) && in_array($proj['id'], $filter_project)) ? 'selected' : ''; ?>>
-                                <?php echo htmlspecialchars($proj['name']); ?>
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-                
-                <input type="hidden" name="status_id" value="<?php echo !empty($statuses) ? $statuses[0]['id'] : ''; ?>">
-                <input type="hidden" name="priority" value="Low">
+                <?php 
+                $add_task_project_id = (!empty($filter_project) && is_array($filter_project)) ? (int)$filter_project[0] : (isset($projects[0]['id']) ? (int)$projects[0]['id'] : 0); 
+                ?>
+                <input type="hidden" name="project_id" value="<?php echo $add_task_project_id; ?>">
+                <input type="hidden" name="type" value="Task">
+                <input type="hidden" name="priority" value="Medium">
             </div>
             <div class="modal-footer" style="padding: 16px 24px; border-top: 1px solid var(--border-color); display: flex; justify-content: flex-end; gap: 12px;">
                 <button type="button" onclick="closeAddTaskModal()" 
@@ -1744,10 +1740,75 @@ function openAddTaskModal() {
     const modal = document.getElementById('addTaskModal');
     if (modal) {
         modal.style.display = 'block';
-        document.body.style.overflow = 'hidden'; // Prevent background scrolling
+        document.body.style.overflow = 'hidden';
+        if (typeof Quill !== 'undefined' && !window.addTaskQuill) {
+            const el = document.getElementById('add-task-description-editor');
+            if (el && !el.querySelector('.ql-container')) {
+                window.addTaskQuill = new Quill(el, {
+                    theme: 'snow',
+                    modules: { toolbar: [['bold','italic','underline'],['link','image'],['clean']] },
+                    placeholder: 'Enter task description...'
+                });
+                const t = window.addTaskQuill.getModule('toolbar');
+                t.addHandler('image', function() {
+                    const i = document.createElement('input');
+                    i.type = 'file'; i.accept = 'image/*'; i.click();
+                    i.onchange = async () => {
+                        const f = i.files[0];
+                        if (f) try {
+                            const url = await uploadImageForAddTask(f);
+                            const r = window.addTaskQuill.getSelection(true) || { index: window.addTaskQuill.getLength() - 1, length: 0 };
+                            window.addTaskQuill.insertEmbed(r.index, 'image', url);
+                            window.addTaskQuill.setSelection(r.index + 1);
+                        } catch (e) { alert('Upload failed: ' + e.message); }
+                    };
+                });
+                window.addTaskQuill.root.addEventListener('paste', async function(ev) {
+                    for (let j = 0; j < (ev.clipboardData.items || []).length; j++) {
+                        const it = ev.clipboardData.items[j];
+                        if (it.type.indexOf('image') !== -1) {
+                            ev.preventDefault();
+                            const f = it.getAsFile();
+                            if (f) try {
+                                const url = await uploadImageForAddTask(f);
+                                let r = window.addTaskQuill.getSelection(true);
+                                if (!r) r = { index: Math.max(0, window.addTaskQuill.getLength() - 1), length: 0 };
+                                window.addTaskQuill.insertEmbed(r.index, 'image', url);
+                                window.addTaskQuill.setSelection(r.index + 1);
+                            } catch (e) { console.error(e); }
+                            break;
+                        }
+                    }
+                });
+            }
+        }
     } else {
         console.error('Add Task Modal not found');
     }
+}
+
+async function uploadImageForAddTask(file) {
+    if (file.size > 5 * 1024 * 1024) throw new Error('File size exceeds 5MB');
+    const fd = new FormData();
+    fd.append('upload', file);
+    fd.append('type', 'task_attachment');
+    const r = await fetch('upload.php', { method: 'POST', body: fd });
+    const j = await r.json();
+    if (j.error) throw new Error(j.error.message || 'Upload failed');
+    return j.url;
+}
+
+function handleAddTaskFormSubmit(ev) {
+    const q = window.addTaskQuill;
+    const html = (q && q.root) ? q.root.innerHTML : '';
+    const text = (html || '').replace(/<[^>]+>/g, '').trim();
+    if (!text) {
+        alert('Description is required.');
+        return false;
+    }
+    const hi = document.getElementById('add-task-description-input');
+    if (hi) hi.value = html;
+    return true;
 }
 
 function closeAddTaskModal() {
@@ -1755,11 +1816,14 @@ function closeAddTaskModal() {
     const form = document.getElementById('addTaskForm');
     if (modal) {
         modal.style.display = 'none';
-        document.body.style.overflow = ''; // Restore scrolling
+        document.body.style.overflow = '';
     }
     if (form) {
         form.reset();
+        if (window.addTaskQuill) try { window.addTaskQuill.setText(''); } catch (_) {}
     }
+    const hi = document.getElementById('add-task-description-input');
+    if (hi) hi.value = '';
 }
 
 // Close modal when clicking outside

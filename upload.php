@@ -21,8 +21,16 @@ if (!isset($_FILES['upload']) || $_FILES['upload']['error'] !== UPLOAD_ERR_OK) {
     exit;
 }
 
+// Determine upload type from POST data
+$upload_type = $_POST['type'] ?? 'profile';
+if ($upload_type === 'task_attachment') {
+    $max_size = 5 * 1024 * 1024; // 5MB max for task attachments
+} else {
+    $max_size = 2048000; // 2MB max for profile/organization images
+}
+
 // Upload image using existing upload function
-$result = uploadImageLocal($_FILES['upload'], 'profile', 2048000); // 2MB max for CKEditor images
+$result = uploadImageLocal($_FILES['upload'], $upload_type, $max_size);
 
 if ($result['success']) {
     // Return CKEditor-compatible response

@@ -18,20 +18,39 @@ function renderRichText($content) {
         return '';
     }
     
-    $allowed_tags = '<p><br><br/><strong><b><em><i><u><ol><ul><li><span><div><blockquote><a><h1><h2><h3><h4><h5><h6><code>';
+    $allowed_tags = '<p><br><br/><strong><b><em><i><u><ol><ul><li><span><div><blockquote><a><h1><h2><h3><h4><h5><h6><code><img>';
     $sanitized = strip_tags($content, $allowed_tags);
     
     // Remove inline event handlers to prevent XSS
     $sanitized = preg_replace('/ on\w+="[^"]*"/i', '', $sanitized);
     $sanitized = preg_replace("/ on\w+='[^']*'/i", '', $sanitized);
     
-    // Prevent javascript: URLs
+    // Prevent javascript: URLs in links
     $sanitized = preg_replace_callback('/href=("|\')(.*?)\1/i', function ($matches) {
         $url = trim($matches[2]);
         if (stripos($url, 'javascript:') === 0) {
             return 'href="#"';
         }
         return 'href="' . htmlspecialchars($url, ENT_QUOTES, 'UTF-8') . '"';
+    }, $sanitized);
+    
+    // Sanitize image src URLs to prevent XSS
+    $sanitized = preg_replace_callback('/<img([^>]*)>/i', function ($matches) {
+        $attrs = $matches[1];
+        // Extract and sanitize src attribute
+        if (preg_match('/src=("|\')(.*?)\1/i', $attrs, $src_match)) {
+            $src = trim($src_match[2]);
+            // Prevent javascript: URLs
+            if (stripos($src, 'javascript:') === 0) {
+                $attrs = preg_replace('/src=("|\')(.*?)\1/i', 'src="#"', $attrs);
+            } else {
+                $safe_src = htmlspecialchars($src, ENT_QUOTES, 'UTF-8');
+                $attrs = preg_replace('/src=("|\')(.*?)\1/i', 'src="' . $safe_src . '"', $attrs);
+            }
+        }
+        // Remove any dangerous attributes
+        $attrs = preg_replace('/on\w+=/i', '', $attrs);
+        return '<img' . $attrs . ' style="max-width: 100%; height: auto;">';
     }, $sanitized);
     
     return $sanitized;
@@ -88,6 +107,27 @@ $task_id = isset($_GET['id']) ? intval($_GET['id']) : 0;
 
 if ($task_id == 0) {
     header('Location: tasks');
+    exit();
+}
+
+// Handle get time log for editing
+if (isset($_GET['get_timelog'])) {
+    $timelog_id = intval($_GET['get_timelog']);
+    $conn = getDBConnection();
+    $stmt = $conn->prepare("SELECT * FROM time_logs WHERE id = ?");
+    $stmt->bind_param("i", $timelog_id);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $timelog = $result->fetch_assoc();
+    $stmt->close();
+    $conn->close();
+    
+    header('Content-Type: application/json');
+    if ($timelog) {
+        echo json_encode(['success' => true, 'timelog' => $timelog]);
+    } else {
+        echo json_encode(['success' => false, 'error' => 'Time log not found']);
+    }
     exit();
 }
 
@@ -262,6 +302,324 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_task'])) {
             $error = 'Error updating task: ' . $conn->error;
         }
         $stmt->close();
+    }
+}
+
+// Handle time log submission
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['add_timelog'])) {
+    $log_date = trim($_POST['log_date'] ?? '');
+    $hours = intval($_POST['hours'] ?? 0);
+    $minutes = intval($_POST['minutes'] ?? 0);
+    $description = trim($_POST['description'] ?? '');
+    $user_id = $_SESSION['user_id'];
+    $is_ajax = !empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest';
+    $error = '';
+    
+    if (empty($log_date)) {
+        $error = 'Date is required';
+    } elseif ($hours < 0 || $hours > 23) {
+        $error = 'Hours must be between 0 and 23';
+    } elseif ($minutes < 0 || $minutes > 59) {
+        $error = 'Minutes must be between 0 and 59';
+    } elseif ($hours == 0 && $minutes == 0) {
+        $error = 'At least one hour or minute must be entered';
+    }
+    
+    if (!empty($error)) {
+        if ($is_ajax) {
+            header('Content-Type: application/json');
+            echo json_encode([
+                'success' => false,
+                'error' => $error
+            ]);
+            exit();
+        }
+    } else {
+        $stmt = $conn->prepare("INSERT INTO time_logs (task_id, user_id, log_date, hours, minutes, description) VALUES (?, ?, ?, ?, ?, ?)");
+        $stmt->bind_param("iisiss", $task_id, $user_id, $log_date, $hours, $minutes, $description);
+        
+        if ($stmt->execute()) {
+            $timelog_id = $conn->insert_id;
+            $message = 'Time log added successfully';
+            
+            // Log activity
+            $action = "Time log added: {$hours}h {$minutes}m";
+            $activity_stmt = $conn->prepare("INSERT INTO activity_logs (task_id, user_id, action) VALUES (?, ?, ?)");
+            $activity_stmt->bind_param("iis", $task_id, $user_id, $action);
+            $activity_stmt->execute();
+            $activity_stmt->close();
+            
+            // If AJAX request, return JSON response
+            if ($is_ajax) {
+                // Get the newly added time log with user details
+                $new_timelog_stmt = $conn->prepare("
+                    SELECT tl.*, u.full_name, u.email
+                    FROM time_logs tl
+                    JOIN users u ON tl.user_id = u.id
+                    WHERE tl.id = ?
+                ");
+                $new_timelog_stmt->bind_param("i", $timelog_id);
+                $new_timelog_stmt->execute();
+                $new_timelog_result = $new_timelog_stmt->get_result();
+                $new_timelog = $new_timelog_result->fetch_assoc();
+                $new_timelog_stmt->close();
+                
+                header('Content-Type: application/json');
+                echo json_encode([
+                    'success' => true,
+                    'message' => $message,
+                    'timelog' => $new_timelog
+                ]);
+                exit();
+            }
+        } else {
+            $error = 'Error adding time log: ' . $conn->error;
+            if ($is_ajax) {
+                header('Content-Type: application/json');
+                echo json_encode([
+                    'success' => false,
+                    'error' => $error
+                ]);
+                exit();
+            }
+        }
+        $stmt->close();
+    }
+}
+
+// Handle time log update
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_timelog'])) {
+    $timelog_id = intval($_POST['timelog_id'] ?? 0);
+    $log_date = trim($_POST['log_date'] ?? '');
+    $hours = intval($_POST['hours'] ?? 0);
+    $minutes = intval($_POST['minutes'] ?? 0);
+    $description = trim($_POST['description'] ?? '');
+    $user_id = $_SESSION['user_id'];
+    $is_ajax = !empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest';
+    $error = '';
+    
+    // Get old time log data for activity log
+    $old_log_stmt = $conn->prepare("SELECT log_date, hours, minutes, description FROM time_logs WHERE id = ?");
+    $old_log_stmt->bind_param("i", $timelog_id);
+    $old_log_stmt->execute();
+    $old_log_result = $old_log_stmt->get_result();
+    $old_log = $old_log_result->fetch_assoc();
+    $old_log_stmt->close();
+    
+    if (empty($log_date)) {
+        $error = 'Date is required';
+    } elseif ($hours < 0 || $hours > 23) {
+        $error = 'Hours must be between 0 and 23';
+    } elseif ($minutes < 0 || $minutes > 59) {
+        $error = 'Minutes must be between 0 and 59';
+    } elseif ($hours == 0 && $minutes == 0) {
+        $error = 'At least one hour or minute must be entered';
+    }
+    
+    if (!empty($error)) {
+        if ($is_ajax) {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => false, 'error' => $error]);
+            exit();
+        }
+    } else {
+        $stmt = $conn->prepare("UPDATE time_logs SET log_date = ?, hours = ?, minutes = ?, description = ? WHERE id = ?");
+        $stmt->bind_param("siisi", $log_date, $hours, $minutes, $description, $timelog_id);
+        
+        if ($stmt->execute()) {
+            // Log activity
+            $old_time = ($old_log['hours'] ?? 0) . 'h ' . ($old_log['minutes'] ?? 0) . 'm';
+            $new_time = $hours . 'h ' . $minutes . 'm';
+            $action = "Time log updated: {$old_time} → {$new_time}";
+            $activity_stmt = $conn->prepare("INSERT INTO activity_logs (task_id, user_id, action, old_value, new_value) VALUES (?, ?, ?, ?, ?)");
+            $old_value = $old_time . ' on ' . ($old_log['log_date'] ?? '');
+            $new_value = $new_time . ' on ' . $log_date;
+            $activity_stmt->bind_param("iisss", $task_id, $user_id, $action, $old_value, $new_value);
+            $activity_stmt->execute();
+            $activity_stmt->close();
+            
+            if ($is_ajax) {
+                header('Content-Type: application/json');
+                echo json_encode(['success' => true, 'message' => 'Time log updated successfully']);
+                exit();
+            }
+        } else {
+            $error = 'Error updating time log: ' . $conn->error;
+            if ($is_ajax) {
+                header('Content-Type: application/json');
+                echo json_encode(['success' => false, 'error' => $error]);
+                exit();
+            }
+        }
+        $stmt->close();
+    }
+}
+
+// Handle time log deletion
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['delete_timelog'])) {
+    $timelog_id = intval($_POST['timelog_id'] ?? 0);
+    $user_id = $_SESSION['user_id'];
+    $is_ajax = !empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest';
+    
+    // Get old time log data for activity log
+    $old_log_stmt = $conn->prepare("SELECT hours, minutes, log_date FROM time_logs WHERE id = ?");
+    $old_log_stmt->bind_param("i", $timelog_id);
+    $old_log_stmt->execute();
+    $old_log_result = $old_log_stmt->get_result();
+    $old_log = $old_log_result->fetch_assoc();
+    $old_log_stmt->close();
+    
+    $stmt = $conn->prepare("DELETE FROM time_logs WHERE id = ?");
+    $stmt->bind_param("i", $timelog_id);
+    
+    if ($stmt->execute()) {
+        // Log activity
+        $old_time = ($old_log['hours'] ?? 0) . 'h ' . ($old_log['minutes'] ?? 0) . 'm';
+        $action = "Time log deleted: {$old_time} on " . ($old_log['log_date'] ?? '');
+        $activity_stmt = $conn->prepare("INSERT INTO activity_logs (task_id, user_id, action, old_value) VALUES (?, ?, ?, ?)");
+        $old_value = $old_time . ' on ' . ($old_log['log_date'] ?? '');
+        $activity_stmt->bind_param("iiss", $task_id, $user_id, $action, $old_value);
+        $activity_stmt->execute();
+        $activity_stmt->close();
+        
+        if ($is_ajax) {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => true, 'message' => 'Time log deleted successfully']);
+            exit();
+        }
+    } else {
+        $error = 'Error deleting time log: ' . $conn->error;
+        if ($is_ajax) {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => false, 'error' => $error]);
+            exit();
+        }
+    }
+    $stmt->close();
+}
+
+// Handle comment edit
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['edit_comment'])) {
+    $comment_id = intval($_POST['comment_id'] ?? 0);
+    $new_comment = trim($_POST['comment'] ?? '');
+    $user_id = $_SESSION['user_id'];
+    $is_ajax = !empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest';
+    
+    // Get old comment for activity log
+    $old_comment_stmt = $conn->prepare("SELECT task_id, user_id, comment FROM task_comments WHERE id = ?");
+    $old_comment_stmt->bind_param("i", $comment_id);
+    $old_comment_stmt->execute();
+    $old_comment_result = $old_comment_stmt->get_result();
+    $old_comment = $old_comment_result->fetch_assoc();
+    $old_comment_stmt->close();
+
+    // Validate ownership / permission and same task
+    $can_edit_comment = false;
+    if ($old_comment && intval($old_comment['task_id'] ?? 0) === $task_id) {
+        $owner_id = intval($old_comment['user_id'] ?? 0);
+        $can_edit_comment = ($owner_id === intval($_SESSION['user_id'] ?? 0)) || isSuperAdmin() || isOrgAdmin();
+    }
+    if (!$can_edit_comment) {
+        $error = 'You do not have permission to edit this comment';
+        if ($is_ajax) {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => false, 'error' => $error]);
+            exit();
+        }
+    }
+    
+    if (empty($new_comment)) {
+        $error = 'Comment cannot be empty';
+        if ($is_ajax) {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => false, 'error' => $error]);
+            exit();
+        }
+    } else {
+        $stmt = $conn->prepare("UPDATE task_comments SET comment = ? WHERE id = ?");
+        $stmt->bind_param("si", $new_comment, $comment_id);
+        
+        if ($stmt->execute()) {
+            // Log activity
+            $action = "Comment edited";
+            $activity_stmt = $conn->prepare("INSERT INTO activity_logs (task_id, user_id, action, old_value, new_value) VALUES (?, ?, ?, ?, ?)");
+            $old_value = substr($old_comment['comment'] ?? '', 0, 255);
+            $new_value = substr($new_comment, 0, 255);
+            $activity_stmt->bind_param("iisss", $task_id, $user_id, $action, $old_value, $new_value);
+            $activity_stmt->execute();
+            $activity_stmt->close();
+            
+            if ($is_ajax) {
+                header('Content-Type: application/json');
+                echo json_encode(['success' => true, 'message' => 'Comment updated successfully', 'comment' => $new_comment]);
+                exit();
+            }
+        } else {
+            $error = 'Error updating comment: ' . $conn->error;
+            if ($is_ajax) {
+                header('Content-Type: application/json');
+                echo json_encode(['success' => false, 'error' => $error]);
+                exit();
+            }
+        }
+        $stmt->close();
+    }
+}
+
+// Handle comment deletion
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['delete_comment'])) {
+    $comment_id = intval($_POST['comment_id'] ?? 0);
+    $user_id = $_SESSION['user_id'];
+    $is_ajax = !empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest';
+
+    // Fetch comment for permission + activity log
+    $get_stmt = $conn->prepare("SELECT task_id, user_id, comment FROM task_comments WHERE id = ?");
+    $get_stmt->bind_param("i", $comment_id);
+    $get_stmt->execute();
+    $get_res = $get_stmt->get_result();
+    $row = $get_res->fetch_assoc();
+    $get_stmt->close();
+
+    $can_delete = false;
+    if ($row && intval($row['task_id'] ?? 0) === $task_id) {
+        $owner_id = intval($row['user_id'] ?? 0);
+        $can_delete = ($owner_id === intval($_SESSION['user_id'] ?? 0)) || isSuperAdmin() || isOrgAdmin();
+    }
+
+    if (!$can_delete) {
+        $error = 'You do not have permission to delete this comment';
+        if ($is_ajax) {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => false, 'error' => $error]);
+            exit();
+        }
+    } else {
+        $del_stmt = $conn->prepare("DELETE FROM task_comments WHERE id = ?");
+        $del_stmt->bind_param("i", $comment_id);
+
+        if ($del_stmt->execute()) {
+            // Log activity
+            $action = "Comment deleted";
+            $activity_stmt = $conn->prepare("INSERT INTO activity_logs (task_id, user_id, action, old_value) VALUES (?, ?, ?, ?)");
+            $old_value = substr($row['comment'] ?? '', 0, 255);
+            $activity_stmt->bind_param("iiss", $task_id, $user_id, $action, $old_value);
+            $activity_stmt->execute();
+            $activity_stmt->close();
+
+            if ($is_ajax) {
+                header('Content-Type: application/json');
+                echo json_encode(['success' => true, 'message' => 'Comment deleted successfully']);
+                exit();
+            }
+        } else {
+            $error = 'Error deleting comment: ' . $conn->error;
+            if ($is_ajax) {
+                header('Content-Type: application/json');
+                echo json_encode(['success' => false, 'error' => $error]);
+                exit();
+            }
+        }
+        $del_stmt->close();
     }
 }
 
@@ -883,6 +1241,25 @@ if ($table_check && $table_check->num_rows > 0) {
     }
 }
 $attachments_check_conn->close();
+
+// Get time logs
+$time_logs = [];
+$total_time_minutes = 0;
+$time_logs_check_conn = getDBConnection();
+$time_logs_query = $time_logs_check_conn->prepare("SELECT tl.id, tl.task_id, tl.user_id, tl.log_date, tl.hours, tl.minutes, tl.description, tl.created_at, u.full_name, u.email FROM time_logs tl LEFT JOIN users u ON tl.user_id = u.id WHERE tl.task_id = ? ORDER BY tl.log_date DESC, tl.created_at DESC");
+if ($time_logs_query) {
+    $time_logs_query->bind_param("i", $task_id);
+    $time_logs_query->execute();
+    $time_logs_result = $time_logs_query->get_result();
+    $time_logs = $time_logs_result->fetch_all(MYSQLI_ASSOC);
+    $time_logs_query->close();
+    
+    // Calculate total time
+    foreach ($time_logs as $log) {
+        $total_time_minutes += ($log['hours'] * 60) + $log['minutes'];
+    }
+}
+$time_logs_check_conn->close();
 
 $conn->close();
 
@@ -2493,10 +2870,30 @@ body .content-wrapper:has(.task-view-page) {
                         Activity (<?php echo count($activities); ?>)
                     </button>
                     <button class="tab-btn" data-tab="attachments" onclick="switchMainTab('attachments')" style="padding: 12px 20px; background: none; border: none; border-bottom: 2px solid transparent; color: var(--text-secondary); font-weight: 500; font-size: 14px; cursor: pointer; margin-bottom: -2px;">
-                        Attachments
+                        Attachments (<?php 
+                        $attachment_count = count($attachments);
+                        // Also count images in description
+                        $description = $task['description'] ?? '';
+                        if (!empty($description)) {
+                            preg_match_all('/<img[^>]+src=["\']([^"\']+)["\'][^>]*>/i', $description, $img_matches);
+                            $image_count = count($img_matches[1] ?? []);
+                            $attachment_count += $image_count;
+                        }
+                        echo $attachment_count; 
+                        ?>)
                     </button>
                     <button class="tab-btn" data-tab="timelog" onclick="switchMainTab('timelog')" style="padding: 12px 20px; background: none; border: none; border-bottom: 2px solid transparent; color: var(--text-secondary); font-weight: 500; font-size: 14px; cursor: pointer; margin-bottom: -2px;">
-                        Time Log
+                        Time Log <?php 
+                        if ($total_time_minutes > 0) {
+                            $total_hours = floor($total_time_minutes / 60);
+                            $total_mins = $total_time_minutes % 60;
+                            echo '(' . $total_hours . 'h';
+                            if ($total_mins > 0) {
+                                echo ' ' . $total_mins . 'm';
+                            }
+                            echo ')';
+                        }
+                        ?>
                     </button>
                 </div>
                 
@@ -2520,10 +2917,23 @@ body .content-wrapper:has(.task-view-page) {
                             ?>
                         </div>
                         <div id="task-description-edit" style="display: none;">
-                            <div id="task-description-editor" style="min-height: 400px;">
-                                <?php echo $task['description'] ?? ''; ?>
-                            </div>
+                            <div id="task-description-editor" style="min-height: 400px; background: white; border: 1px solid var(--border-color); border-radius: 4px;"></div>
                         </div>
+                        <style>
+                        #task-description-editor .ql-editor {
+                            min-height: 400px;
+                            font-size: 14px;
+                            line-height: 1.6;
+                            padding: 12px;
+                        }
+                        #task-description-editor .ql-container {
+                            font-family: inherit;
+                        }
+                        #task-description-editor .ql-editor:focus {
+                            outline: 2px solid var(--blue);
+                            outline-offset: -2px;
+                        }
+                        </style>
                     </div>
                 </div>
                 
@@ -2583,21 +2993,74 @@ body .content-wrapper:has(.task-view-page) {
                             <h3 class="attachments-panel-title">Attachments</h3>
                         </div>
                         <div class="attachments-list">
-                            <?php if (empty($attachments)): ?>
+                            <?php 
+                            // Extract images from description
+                            $description_images = [];
+                            $description = $task['description'] ?? '';
+                            if (!empty($description)) {
+                                preg_match_all('/<img[^>]+src=["\']([^"\']+)["\'][^>]*>/i', $description, $img_matches);
+                                if (!empty($img_matches[1])) {
+                                    foreach ($img_matches[1] as $img_src) {
+                                        // Only include images from task_attachments folder
+                                        if (strpos($img_src, 'uploads/task_attachments/') !== false || strpos($img_src, 'task_attachments/') !== false) {
+                                            $filename = basename($img_src);
+                                            // Ensure proper path format
+                                            $file_path = $img_src;
+                                            // If it's a relative path without leading slash, add it
+                                            if (strpos($file_path, 'http') !== 0 && strpos($file_path, '/') !== 0) {
+                                                $file_path = '/' . ltrim($file_path, '/');
+                                            }
+                                            // Get file size if file exists
+                                            $full_path = __DIR__ . '/../' . ltrim($file_path, '/');
+                                            $file_size = file_exists($full_path) ? filesize($full_path) : 0;
+                                            
+                                            $description_images[] = [
+                                                'filename' => $filename,
+                                                'file_path' => $file_path,
+                                                'file_size' => $file_size,
+                                                'mime_type' => 'image/' . (pathinfo($filename, PATHINFO_EXTENSION) === 'png' ? 'png' : (pathinfo($filename, PATHINFO_EXTENSION) === 'gif' ? 'gif' : (pathinfo($filename, PATHINFO_EXTENSION) === 'webp' ? 'webp' : 'jpeg'))),
+                                                'is_from_description' => true
+                                            ];
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            // Combine table attachments and description images
+                            $all_attachments = array_merge($attachments, $description_images);
+                            
+                            if (empty($all_attachments)): ?>
                                 <div style="text-align: center; padding: 30px; color: var(--text-muted); font-size: 13px;">
                                     <i class="fas fa-paperclip" style="font-size: 24px; margin-bottom: 8px; opacity: 0.3;"></i>
                                     <p>No attachments yet</p>
                                 </div>
                             <?php else: ?>
-                                <?php foreach ($attachments as $attachment): ?>
-                                    <div class="attachment-item">
-                                        <i class="fas <?php echo getFileIcon($attachment['mime_type'], $attachment['filename']); ?>" style="margin-right: 10px; color: var(--text-secondary);"></i>
-                                        <a href="<?php echo htmlspecialchars($attachment['file_path']); ?>" target="_blank" style="color: var(--blue); text-decoration: none;">
-                                            <?php echo htmlspecialchars($attachment['filename']); ?>
+                                <?php foreach ($all_attachments as $attachment): ?>
+                                    <?php 
+                                    // Ensure file_path is properly formatted
+                                    $file_url = $attachment['file_path'] ?? '';
+                                    // If it's a relative path, ensure it starts with /
+                                    if (!empty($file_url) && strpos($file_url, 'http') !== 0 && strpos($file_url, '/') !== 0) {
+                                        $file_url = '/' . ltrim($file_url, '/');
+                                    }
+                                    // If file_path is empty, try to construct from filename
+                                    if (empty($file_url) && !empty($attachment['filename'])) {
+                                        $file_url = 'uploads/task_attachments/' . $attachment['filename'];
+                                    }
+                                    ?>
+                                    <div class="attachment-item" style="display: flex; align-items: center; padding: 12px; border-bottom: 1px solid var(--border-color); transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--page-bg)'" onmouseout="this.style.backgroundColor='transparent'">
+                                        <i class="fas <?php echo getFileIcon($attachment['mime_type'] ?? 'application/octet-stream', $attachment['filename'] ?? ''); ?>" style="margin-right: 10px; color: var(--text-secondary); font-size: 16px; width: 20px; flex-shrink: 0;"></i>
+                                        <a href="<?php echo htmlspecialchars($file_url); ?>" target="_blank" rel="noopener noreferrer" style="color: var(--blue); text-decoration: none; flex: 1; font-size: 14px; word-break: break-word; display: flex; align-items: center;" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">
+                                            <span><?php echo htmlspecialchars($attachment['filename'] ?? 'Unknown'); ?></span>
+                                            <?php if (isset($attachment['is_from_description']) && $attachment['is_from_description']): ?>
+                                                <span style="color: var(--text-muted); font-size: 11px; margin-left: 6px; font-style: italic;">(from description)</span>
+                                            <?php endif; ?>
                                         </a>
-                                        <span style="color: var(--text-muted); font-size: 12px; margin-left: auto;">
-                                            <?php echo formatFileSize($attachment['file_size']); ?>
-                                        </span>
+                                        <?php if (!empty($attachment['file_size'])): ?>
+                                            <span style="color: var(--text-muted); font-size: 12px; margin-left: 12px; white-space: nowrap; flex-shrink: 0;">
+                                                <?php echo formatFileSize($attachment['file_size']); ?>
+                                            </span>
+                                        <?php endif; ?>
                                     </div>
                                 <?php endforeach; ?>
                             <?php endif; ?>
@@ -2608,13 +3071,152 @@ body .content-wrapper:has(.task-view-page) {
                 <!-- Tab Content: Time Log -->
                 <div id="main-tab-timelog" class="tab-content" style="display: none; padding: 24px;">
                     <div class="timelog-panel">
-                        <div class="timelog-panel-header">
-                            <h3 class="timelog-panel-title">Time Log</h3>
+                        <div class="timelog-panel-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                            <div>
+                                <h3 class="timelog-panel-title" style="margin: 0; font-size: 18px; font-weight: 600; color: var(--text-primary);">Time Log</h3>
+                                <?php if ($total_time_minutes > 0): ?>
+                                    <p style="margin: 4px 0 0 0; font-size: 13px; color: var(--text-muted);">
+                                        Total: <?php 
+                                        $total_hours = floor($total_time_minutes / 60);
+                                        $total_mins = $total_time_minutes % 60;
+                                        echo $total_hours . 'h ' . $total_mins . 'm';
+                                        ?>
+                                    </p>
+                                <?php endif; ?>
+                            </div>
+                            <button onclick="openAddTimeLogModal()" style="background: var(--blue); color: white; border: none; padding: 8px 16px; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer; display: flex; align-items: center; gap: 6px; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='#2563eb'" onmouseout="this.style.backgroundColor='var(--blue)'">
+                                <i class="fas fa-plus"></i> Add Time
+                            </button>
                         </div>
+                        
+                        <!-- Add Time Log Form (Modal) -->
+                        <div id="add-timelog-modal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 10000; align-items: center; justify-content: center;">
+                            <div style="background: white; border-radius: 12px; padding: 24px; width: 90%; max-width: 500px; box-shadow: 0 10px 25px rgba(0,0,0,0.2);">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                                    <h3 style="margin: 0; font-size: 20px; font-weight: 600; color: var(--text-primary);">Add Time Log</h3>
+                                    <button onclick="closeAddTimeLogModal()" style="background: none; border: none; font-size: 24px; color: var(--text-muted); cursor: pointer; padding: 0; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; border-radius: 4px;" onmouseover="this.style.backgroundColor='var(--page-bg)'" onmouseout="this.style.backgroundColor='transparent'">&times;</button>
+                                </div>
+                                <form id="add-timelog-form" onsubmit="addTimeLog(event)">
+                                    <div style="margin-bottom: 16px;">
+                                        <label style="display: block; margin-bottom: 6px; font-size: 14px; font-weight: 500; color: var(--text-primary);">Date *</label>
+                                        <input type="date" id="timelog-date" name="log_date" required style="width: 100%; padding: 10px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; box-sizing: border-box;" value="<?php echo date('Y-m-d'); ?>">
+                                    </div>
+                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;">
+                                        <div>
+                                            <label style="display: block; margin-bottom: 6px; font-size: 14px; font-weight: 500; color: var(--text-primary);">Hours *</label>
+                                            <input type="number" id="timelog-hours" name="hours" min="0" max="23" required style="width: 100%; padding: 10px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; box-sizing: border-box;" value="0">
+                                        </div>
+                                        <div>
+                                            <label style="display: block; margin-bottom: 6px; font-size: 14px; font-weight: 500; color: var(--text-primary);">Minutes *</label>
+                                            <input type="number" id="timelog-minutes" name="minutes" min="0" max="59" required style="width: 100%; padding: 10px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; box-sizing: border-box;" value="0">
+                                        </div>
+                                    </div>
+                                    <div style="margin-bottom: 20px;">
+                                        <label style="display: block; margin-bottom: 6px; font-size: 14px; font-weight: 500; color: var(--text-primary);">Description</label>
+                                        <textarea id="timelog-description" name="description" rows="3" style="width: 100%; padding: 10px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; box-sizing: border-box; resize: vertical;" placeholder="What did you work on?"></textarea>
+                                    </div>
+                                    <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                                        <button type="button" onclick="closeAddTimeLogModal()" style="background: var(--page-bg); color: var(--text-primary); border: 1px solid var(--border-color); padding: 10px 20px; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer;">Cancel</button>
+                                        <button type="submit" style="background: var(--blue); color: white; border: none; padding: 10px 20px; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer;">Add Time</button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                        
                         <div class="timelog-list">
-                            <div style="text-align: center; padding: 30px; color: var(--text-muted); font-size: 13px;">
-                                <i class="fas fa-clock" style="font-size: 24px; margin-bottom: 8px; opacity: 0.3;"></i>
-                                <p>Time logging feature coming soon</p>
+                            <?php if (empty($time_logs)): ?>
+                                <div style="text-align: center; padding: 30px; color: var(--text-muted); font-size: 13px;">
+                                    <i class="fas fa-clock" style="font-size: 24px; margin-bottom: 8px; opacity: 0.3;"></i>
+                                    <p>No time logs yet. Click "Add Time" to log your work.</p>
+                                </div>
+                            <?php else: ?>
+                                <table style="width: 100%; border-collapse: collapse; margin-top: 12px;">
+                                    <thead>
+                                        <tr style="background: var(--page-bg); border-bottom: 2px solid var(--border-color);">
+                                            <th style="padding: 12px; text-align: left; font-size: 13px; font-weight: 600; color: var(--text-primary);">Date</th>
+                                            <th style="padding: 12px; text-align: left; font-size: 13px; font-weight: 600; color: var(--text-primary);">Time</th>
+                                            <th style="padding: 12px; text-align: left; font-size: 13px; font-weight: 600; color: var(--text-primary);">Description</th>
+                                            <th style="padding: 12px; text-align: left; font-size: 13px; font-weight: 600; color: var(--text-primary);">User</th>
+                                            <th style="padding: 12px; text-align: left; font-size: 13px; font-weight: 600; color: var(--text-primary);">Created</th>
+                                            <th style="padding: 12px; text-align: center; font-size: 13px; font-weight: 600; color: var(--text-primary);">Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php foreach ($time_logs as $log): 
+                                            $can_edit = ($log['user_id'] == $_SESSION['user_id']) || isSuperAdmin() || isOrgAdmin();
+                                        ?>
+                                            <tr id="timelog-row-<?php echo $log['id']; ?>" style="border-bottom: 1px solid var(--border-color); transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='var(--page-bg)'" onmouseout="this.style.backgroundColor='transparent'">
+                                                <td style="padding: 12px; font-size: 14px; color: var(--text-primary);">
+                                                    <?php echo date('M d, Y', strtotime($log['log_date'])); ?>
+                                                </td>
+                                                <td style="padding: 12px; font-size: 14px; color: var(--blue); font-weight: 600;">
+                                                    <?php echo $log['hours']; ?>h <?php echo $log['minutes']; ?>m
+                                                </td>
+                                                <td style="padding: 12px; font-size: 14px; color: var(--text-secondary); max-width: 300px;">
+                                                    <div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="<?php echo htmlspecialchars($log['description'] ?? ''); ?>">
+                                                        <?php echo htmlspecialchars($log['description'] ?? '-'); ?>
+                                                    </div>
+                                                </td>
+                                                <td style="padding: 12px; font-size: 13px; color: var(--text-secondary);">
+                                                    <?php 
+                                                    $user_name = $log['full_name'] ?? $log['email'] ?? 'Unknown';
+                                                    echo htmlspecialchars($user_name);
+                                                    ?>
+                                                </td>
+                                                <td style="padding: 12px; font-size: 13px; color: var(--text-muted);">
+                                                    <?php echo date('M d, Y g:i A', strtotime($log['created_at'])); ?>
+                                                </td>
+                                                <td style="padding: 12px; text-align: center;">
+                                                    <?php if ($can_edit): ?>
+                                                        <button onclick="editTimeLog(<?php echo $log['id']; ?>)" style="background: var(--blue); color: white; border: none; padding: 6px 12px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-right: 6px;" title="Edit">
+                                                            <i class="fas fa-edit"></i>
+                                                        </button>
+                                                        <button onclick="deleteTimeLog(<?php echo $log['id']; ?>)" style="background: #ef4444; color: white; border: none; padding: 6px 12px; border-radius: 4px; font-size: 12px; cursor: pointer;" title="Delete">
+                                                            <i class="fas fa-trash"></i>
+                                                        </button>
+                                                    <?php else: ?>
+                                                        <span style="color: var(--text-muted); font-size: 12px;">-</span>
+                                                    <?php endif; ?>
+                                                </td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                            <?php endif; ?>
+                        </div>
+                        
+                        <!-- Edit Time Log Modal -->
+                        <div id="edit-timelog-modal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 10000; align-items: center; justify-content: center;">
+                            <div style="background: white; border-radius: 12px; padding: 24px; width: 90%; max-width: 500px; box-shadow: 0 10px 25px rgba(0,0,0,0.2);">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                                    <h3 style="margin: 0; font-size: 20px; font-weight: 600; color: var(--text-primary);">Edit Time Log</h3>
+                                    <button onclick="closeEditTimeLogModal()" style="background: none; border: none; font-size: 24px; color: var(--text-muted); cursor: pointer; padding: 0; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; border-radius: 4px;" onmouseover="this.style.backgroundColor='var(--page-bg)'" onmouseout="this.style.backgroundColor='transparent'">&times;</button>
+                                </div>
+                                <form id="edit-timelog-form" onsubmit="updateTimeLog(event)">
+                                    <input type="hidden" id="edit-timelog-id" name="timelog_id">
+                                    <div style="margin-bottom: 16px;">
+                                        <label style="display: block; margin-bottom: 6px; font-size: 14px; font-weight: 500; color: var(--text-primary);">Date *</label>
+                                        <input type="date" id="edit-timelog-date" name="log_date" required style="width: 100%; padding: 10px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+                                    </div>
+                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;">
+                                        <div>
+                                            <label style="display: block; margin-bottom: 6px; font-size: 14px; font-weight: 500; color: var(--text-primary);">Hours *</label>
+                                            <input type="number" id="edit-timelog-hours" name="hours" min="0" max="23" required style="width: 100%; padding: 10px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+                                        </div>
+                                        <div>
+                                            <label style="display: block; margin-bottom: 6px; font-size: 14px; font-weight: 500; color: var(--text-primary);">Minutes *</label>
+                                            <input type="number" id="edit-timelog-minutes" name="minutes" min="0" max="59" required style="width: 100%; padding: 10px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+                                        </div>
+                                    </div>
+                                    <div style="margin-bottom: 20px;">
+                                        <label style="display: block; margin-bottom: 6px; font-size: 14px; font-weight: 500; color: var(--text-primary);">Description</label>
+                                        <textarea id="edit-timelog-description" name="description" rows="3" style="width: 100%; padding: 10px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; box-sizing: border-box; resize: vertical;" placeholder="What did you work on?"></textarea>
+                                    </div>
+                                    <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                                        <button type="button" onclick="closeEditTimeLogModal()" style="background: var(--page-bg); color: var(--text-primary); border: 1px solid var(--border-color); padding: 10px 20px; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer;">Cancel</button>
+                                        <button type="submit" style="background: var(--blue); color: white; border: none; padding: 10px 20px; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer;">Update Time</button>
+                                    </div>
+                                </form>
                             </div>
                         </div>
                     </div>
@@ -2706,13 +3308,35 @@ body .content-wrapper:has(.task-view-page) {
                                     <div class="comment-avatar">
                                         <?php echo htmlspecialchars($initials); ?>
                                     </div>
-                                    <div class="comment-content">
-                                        <div class="comment-header">
-                                            <span class="comment-author"><?php echo htmlspecialchars($comment['user_name']); ?></span>
-                                            <span class="comment-date"><?php echo date('d-m-Y H:i A', strtotime($comment['created_at'])); ?></span>
+                                    <div class="comment-content" style="flex: 1;">
+                                        <div class="comment-header" style="display: flex; justify-content: space-between; align-items: center;">
+                                            <div>
+                                                <span class="comment-author"><?php echo htmlspecialchars($comment['user_name']); ?></span>
+                                                <span class="comment-date"><?php echo date('d-m-Y H:i A', strtotime($comment['created_at'])); ?></span>
+                                            </div>
+                                            <?php 
+                                            $can_edit_comment = ($comment['user_id'] == $_SESSION['user_id']) || isSuperAdmin() || isOrgAdmin();
+                                            if ($can_edit_comment): 
+                                            ?>
+                                                <div style="display: flex; gap: 8px;">
+                                                    <button onclick="editComment(<?php echo $comment['id']; ?>)" style="background: none; border: none; color: var(--blue); cursor: pointer; font-size: 12px; padding: 4px 8px;" title="Edit">
+                                                        <i class="fas fa-edit"></i>
+                                                    </button>
+                                                    <button onclick="deleteComment(<?php echo $comment['id']; ?>)" style="background: none; border: none; color: #ef4444; cursor: pointer; font-size: 12px; padding: 4px 8px;" title="Delete">
+                                                        <i class="fas fa-trash"></i>
+                                                    </button>
+                                                </div>
+                                            <?php endif; ?>
                                         </div>
-                                        <div class="comment-text">
+                                        <div class="comment-text" id="comment-text-<?php echo $comment['id']; ?>">
                                             <?php echo nl2br($comment_text); ?>
+                                        </div>
+                                        <div id="comment-edit-<?php echo $comment['id']; ?>" style="display: none;">
+                                            <textarea id="comment-edit-text-<?php echo $comment['id']; ?>" style="width: 100%; padding: 8px; border: 1px solid var(--border-color); border-radius: 4px; font-size: 14px; min-height: 80px; resize: vertical;"><?php echo htmlspecialchars($comment['comment']); ?></textarea>
+                                            <div style="display: flex; gap: 8px; margin-top: 8px;">
+                                                <button onclick="saveComment(<?php echo $comment['id']; ?>)" style="background: var(--blue); color: white; border: none; padding: 6px 12px; border-radius: 4px; font-size: 12px; cursor: pointer;">Save</button>
+                                                <button onclick="cancelEditComment(<?php echo $comment['id']; ?>)" style="background: var(--page-bg); color: var(--text-primary); border: 1px solid var(--border-color); padding: 6px 12px; border-radius: 4px; font-size: 12px; cursor: pointer;">Cancel</button>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
@@ -2921,7 +3545,24 @@ function switchMainTab(tabName) {
         selectedBtn.style.color = 'var(--blue)';
         selectedBtn.style.fontWeight = '600';
     }
+    
+    // Save active tab to localStorage
+    const taskId = new URLSearchParams(window.location.search).get('id');
+    if (taskId) {
+        localStorage.setItem('task_view_active_tab_' + taskId, tabName);
+    }
 }
+
+// Restore active tab on page load
+document.addEventListener('DOMContentLoaded', function() {
+    const taskId = new URLSearchParams(window.location.search).get('id');
+    if (taskId) {
+        const savedTab = localStorage.getItem('task_view_active_tab_' + taskId);
+        if (savedTab) {
+            switchMainTab(savedTab);
+        }
+    }
+});
 
 // Nested Tab switching function
 function switchNestedTab(tabName) {
@@ -3248,45 +3889,43 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 </script>
 
-<script src="https://cdn.ckeditor.com/ckeditor5/41.3.1/classic/ckeditor.js"></script>
-<script src="https://cdn.ckeditor.com/ckeditor5/41.3.1/classic/translations/en.js"></script>
+<!-- Quill.js Rich Text Editor -->
+<link href="https://cdn.quilljs.com/1.3.6/quill.snow.css" rel="stylesheet">
+<script src="https://cdn.quilljs.com/1.3.6/quill.js"></script>
 <script>
-// CKEditor instance for description
+// Quill editor instance for description
 let descriptionEditor = null;
 
-// Custom Upload Adapter for CKEditor
-class CustomUploadAdapter {
-    constructor(loader) {
-        this.loader = loader;
-    }
+// Image upload handler for Quill
+async function uploadImage(file) {
+    return new Promise((resolve, reject) => {
+        // Validate file size (max 5MB)
+        if (file.size > 5 * 1024 * 1024) {
+            reject('File size exceeds 5MB limit');
+            return;
+        }
+        
+        const formData = new FormData();
+        formData.append('upload', file);
+        formData.append('type', 'task_attachment');
+        formData.append('task_id', <?php echo $task_id; ?>);
 
-    upload() {
-        return this.loader.file
-            .then(file => new Promise((resolve, reject) => {
-                const formData = new FormData();
-                formData.append('upload', file);
-
-                fetch('upload.php', {
-                    method: 'POST',
-                    body: formData
-                })
-                .then(response => response.json())
-                .then(result => {
-                    if (result.url) {
-                        resolve({ default: result.url });
-                    } else {
-                        reject(result.error?.message || 'Upload failed');
-                    }
-                })
-                .catch(error => {
-                    reject('Upload failed: ' + error.message);
-                });
-            }));
-    }
-
-    abort() {
-        // Abort upload if needed
-    }
+        fetch('upload.php', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => response.json())
+        .then(result => {
+            if (result.url) {
+                resolve(result.url);
+            } else {
+                reject(result.error?.message || 'Upload failed');
+            }
+        })
+        .catch(error => {
+            reject('Upload failed: ' + error.message);
+        });
+    });
 }
 
 // Store original values
@@ -3363,7 +4002,7 @@ function checkForChanges() {
     const descDisplay = document.getElementById('task-description-display');
     let currentDesc = '';
     if (descriptionEditor && window.getComputedStyle(document.getElementById('task-description-edit')).display !== 'none') {
-        currentDesc = descriptionEditor.getData().trim();
+        currentDesc = descriptionEditor.root.innerHTML.trim();
     } else if (descDisplay) {
         const currentHtml = descDisplay.innerHTML.trim();
         if (currentHtml && !currentHtml.includes('Click to add description')) {
@@ -3441,14 +4080,16 @@ function saveAllChanges() {
     
     if (descEditor && window.getComputedStyle(descEditor.parentElement).display !== 'none') {
         // Description is in edit mode
-        descValue = descEditor.value.trim();
+        if (descriptionEditor) {
+            // Use Quill editor data
+            descValue = descriptionEditor.root.innerHTML.trim();
+        } else {
+            descValue = descEditor.innerHTML.trim();
+        }
     } else if (descDisplay) {
-        // Description is in display mode, extract text from HTML
-        const tempDiv = document.createElement('div');
-        tempDiv.innerHTML = descDisplay.innerHTML;
-        descValue = tempDiv.textContent || tempDiv.innerText || '';
-        descValue = descValue.trim();
-        if (descValue === 'Click to add description') descValue = '';
+        // Description is in display mode, extract HTML content
+        descValue = descDisplay.innerHTML.trim();
+        if (descValue.includes('Click to add description')) descValue = '';
     }
     
     const descField = document.createElement('input');
@@ -3543,216 +4184,159 @@ function editDescription() {
             descContent = '';
         }
         
-        // Initialize CKEditor if not already initialized
+        // Initialize Quill editor if not already initialized
         if (!descriptionEditor) {
-            ClassicEditor
-                .create(editorDiv, {
-                    toolbar: ['heading', '|', 'bold', 'italic', 'link', 'bulletedList', 'numberedList', '|', 'image', '|', 'undo', 'redo'],
-                    heading: {
-                        options: [
-                            { model: 'paragraph', title: 'Paragraph', class: 'ck-heading_paragraph' },
-                            { model: 'heading1', view: 'h1', title: 'Heading 1', class: 'ck-heading_heading1' },
-                            { model: 'heading2', view: 'h2', title: 'Heading 2', class: 'ck-heading_heading2' }
-                        ]
+            // Configure Quill toolbar with image and file support
+            const toolbarOptions = [
+                [{ 'header': [1, 2, 3, false] }],
+                ['bold', 'italic', 'underline', 'strike'],
+                [{ 'list': 'ordered'}, { 'list': 'bullet' }],
+                [{ 'color': [] }, { 'background': [] }],
+                [{ 'align': [] }],
+                ['link', 'image'],
+                ['clean']
+            ];
+            
+            // Clear the div before initializing Quill
+            editorDiv.innerHTML = '';
+            
+            try {
+                descriptionEditor = new Quill(editorDiv, {
+                    theme: 'snow',
+                    modules: {
+                        toolbar: toolbarOptions
                     },
-                    image: {
-                        toolbar: ['imageTextAlternative', '|', 'imageStyle:alignLeft', 'imageStyle:full', 'imageStyle:alignRight'],
-                        styles: ['full', 'alignLeft', 'alignRight']
+                    placeholder: 'Add description...'
+                });
+                
+                // Set content
+                if (descContent) {
+                    descriptionEditor.root.innerHTML = descContent;
+                }
+                
+                // Set minimum height and ensure editor is focusable
+                setTimeout(() => {
+                    const qlEditor = editorDiv.querySelector('.ql-editor');
+                    if (qlEditor) {
+                        qlEditor.style.minHeight = '400px';
+                        qlEditor.setAttribute('contenteditable', 'true');
+                        qlEditor.tabIndex = 0;
+                        // Focus the editor
+                        qlEditor.focus();
                     }
-                })
-                .then(editor => {
-                    descriptionEditor = editor;
-                    editor.setData(descContent);
-                    
-                    // Set minimum height
-                    editor.ui.view.editable.element.style.minHeight = '400px';
-                    
-                    // Add custom image upload adapter
-                    editor.plugins.get('FileRepository').createUploadAdapter = (loader) => {
-                        return new CustomUploadAdapter(loader);
-                    };
-                    
-                    // Add @mention functionality
-                    const usersData = <?php echo json_encode($users_list); ?>;
-                    let mentionQuery = '';
-                    let mentionStart = null;
-                    let mentionAutocompleteVisible = false;
-                    let mentionSelectedIndex = 0;
-                    let filteredUsers = [];
-                    
-                    // Create mention autocomplete element
-                    const mentionAutocomplete = document.createElement('div');
-                    mentionAutocomplete.id = 'ckeditor-mention-autocomplete';
-                    mentionAutocomplete.style.cssText = 'display: none; position: absolute; background: white; border: 1px solid #ccc; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); max-height: 200px; overflow-y: auto; z-index: 10000; min-width: 200px;';
-                    document.body.appendChild(mentionAutocomplete);
-                    
-                    function showMentionAutocomplete(editor, users, position) {
-                        filteredUsers = users;
-                        mentionSelectedIndex = 0;
-                        mentionAutocompleteVisible = true;
-                        updateMentionList(users);
-                        positionAutocomplete(editor);
-                    }
-                    
-                    function updateMentionAutocomplete(editor, users, position, query) {
-                        if (!query) {
-                            filteredUsers = users;
-                        } else {
-                            const lowerQuery = query.toLowerCase();
-                            filteredUsers = users.filter(user => 
-                                user.full_name.toLowerCase().includes(lowerQuery) ||
-                                user.email.toLowerCase().includes(lowerQuery)
-                            );
+                }, 100);
+            } catch (error) {
+                console.error('Error initializing Quill editor:', error);
+                // Fallback to textarea if Quill fails
+                editorDiv.innerHTML = '<textarea style="width: 100%; min-height: 400px; padding: 12px; border: 1px solid var(--border-color); border-radius: 4px; font-family: inherit; font-size: 14px; resize: vertical;">' + (descContent || '') + '</textarea>';
+                const textarea = editorDiv.querySelector('textarea');
+                if (textarea) {
+                    textarea.focus();
+                }
+            }
+            
+            // Handle image upload on paste or toolbar click
+            const toolbar = descriptionEditor.getModule('toolbar');
+            toolbar.addHandler('image', function() {
+                const input = document.createElement('input');
+                input.setAttribute('type', 'file');
+                input.setAttribute('accept', 'image/*');
+                input.click();
+                
+                input.onchange = async () => {
+                    const file = input.files[0];
+                    if (file) {
+                        const range = descriptionEditor.getSelection(true);
+                        try {
+                            const url = await uploadImage(file);
+                            descriptionEditor.insertEmbed(range.index, 'image', url);
+                            descriptionEditor.setSelection(range.index + 1);
+                        } catch (error) {
+                            console.error('Image upload failed:', error);
+                            alert('Failed to upload image: ' + error);
                         }
-                        mentionSelectedIndex = 0;
-                        updateMentionList(filteredUsers);
-                        positionAutocomplete(editor);
                     }
-                    
-                    function updateMentionList(users) {
-                        mentionAutocomplete.innerHTML = '';
-                        if (users.length === 0) {
-                            const item = document.createElement('div');
-                            item.style.cssText = 'padding: 8px 12px; color: #999;';
-                            item.textContent = 'No users found';
-                            mentionAutocomplete.appendChild(item);
-                        } else {
-                            users.slice(0, 10).forEach((user, index) => {
-                                const item = document.createElement('div');
-                                item.style.cssText = `padding: 8px 12px; cursor: pointer; ${index === mentionSelectedIndex ? 'background: #e3f2fd;' : ''}`;
-                                item.innerHTML = `<strong>${user.full_name}</strong><br><small style="color: #666;">${user.email}</small>`;
-                                item.onmouseover = () => {
-                                    mentionSelectedIndex = index;
-                                    updateMentionList(filteredUsers);
-                                };
-                                item.onclick = () => {
-                                    selectMention(editor, user);
-                                };
-                                mentionAutocomplete.appendChild(item);
-                            });
-                        }
-                        mentionAutocomplete.style.display = 'block';
-                    }
-                    
-                    function positionAutocomplete(editor) {
-                        const editable = editor.ui.view.editable.element;
-                        const rect = editable.getBoundingClientRect();
-                        mentionAutocomplete.style.top = (rect.bottom + window.scrollY + 5) + 'px';
-                        mentionAutocomplete.style.left = (rect.left + window.scrollX) + 'px';
-                    }
-                    
-                    function hideMentionAutocomplete() {
-                        mentionAutocomplete.style.display = 'none';
-                        mentionAutocompleteVisible = false;
-                    }
-                    
-                    function selectMention(editor, user) {
-                        if (!mentionStart) return;
-                        
-                        const model = editor.model;
-                        const selection = model.document.selection;
-                        const range = model.createRange(model.createPositionAt(selection.focus.parent, mentionStart.offset), selection.focus);
-                        
-                        model.change(writer => {
-                            writer.remove(range);
-                            const mentionText = `@${user.full_name} `;
-                            writer.insertText(mentionText, range.start);
-                        });
-                        
-                        hideMentionAutocomplete();
-                        mentionStart = null;
-                        mentionQuery = '';
-                    }
-                    
-                    function navigateMentions(direction) {
-                        if (direction === 'down') {
-                            mentionSelectedIndex = Math.min(mentionSelectedIndex + 1, Math.min(filteredUsers.length - 1, 9));
-                        } else {
-                            mentionSelectedIndex = Math.max(mentionSelectedIndex - 1, 0);
-                        }
-                        updateMentionList(filteredUsers);
-                    }
-                    
-                    // Listen for editor changes
-                    editor.model.document.on('change:data', (evt, data) => {
-                        checkForChanges();
-                        
-                        // Check for @ mentions
-                        const changes = Array.from(data.batch.differ.getChanges());
-                        for (const change of changes) {
-                            if (change.type === 'insert' && change.name === '$text') {
-                                const text = change.data.data;
-                                if (text === '@') {
-                                    mentionStart = { offset: change.position.offset };
-                                    mentionQuery = '';
-                                    showMentionAutocomplete(editor, usersData, change.position);
-                                } else if (mentionStart && /^[a-zA-Z0-9\s]*$/.test(text)) {
-                                    mentionQuery += text;
-                                    updateMentionAutocomplete(editor, usersData, mentionStart, mentionQuery);
-                                } else if (mentionStart && (text === ' ' || text === '\n' || text === '@')) {
-                                    hideMentionAutocomplete();
-                                    mentionStart = null;
-                                    mentionQuery = '';
-                                    if (text === '@') {
-                                        mentionStart = { offset: change.position.offset };
-                                        showMentionAutocomplete(editor, usersData, change.position);
+                };
+            });
+            
+            // Handle paste events for images from clipboard
+            descriptionEditor.clipboard.addMatcher(Node.ELEMENT_NODE, (node, delta) => {
+                if (node.tagName === 'IMG') {
+                    const src = node.getAttribute('src');
+                    if (src && src.startsWith('data:')) {
+                        // Convert data URL to blob and upload
+                        fetch(src)
+                            .then(res => res.blob())
+                            .then(blob => {
+                                const file = new File([blob], 'pasted-image.png', { type: 'image/png' });
+                                uploadImage(file).then(url => {
+                                    let range = descriptionEditor.getSelection(true);
+                                    if (!range) {
+                                        const length = descriptionEditor.getLength();
+                                        range = { index: length - 1, length: 0 };
                                     }
+                                    descriptionEditor.deleteText(range.index, 1);
+                                    descriptionEditor.insertEmbed(range.index, 'image', url);
+                                    descriptionEditor.setSelection(range.index + 1);
+                                }).catch(err => console.error('Upload failed:', err));
+                            });
+                    }
+                }
+                return delta;
+            });
+            
+            // Handle direct clipboard paste (for images copied from browser/file system)
+            descriptionEditor.root.addEventListener('paste', async function(e) {
+                const items = e.clipboardData.items;
+                
+                for (let i = 0; i < items.length; i++) {
+                    const item = items[i];
+                    
+                    // Check if the pasted item is an image
+                    if (item.type.indexOf('image') !== -1) {
+                        e.preventDefault();
+                        
+                        const file = item.getAsFile();
+                        if (file) {
+                            try {
+                                // Get current selection or use end of document
+                                let range = descriptionEditor.getSelection(true);
+                                if (!range) {
+                                    // If no selection, insert at the end
+                                    const length = descriptionEditor.getLength();
+                                    range = { index: length - 1, length: 0 };
                                 }
-                            } else if (change.type === 'remove' && mentionStart) {
-                                const removedText = change.data.data;
-                                if (removedText === '@' || mentionQuery.length === 0) {
-                                    hideMentionAutocomplete();
-                                    mentionStart = null;
-                                    mentionQuery = '';
-                                } else {
-                                    mentionQuery = mentionQuery.slice(0, -1);
-                                    updateMentionAutocomplete(editor, usersData, mentionStart, mentionQuery);
-                                }
+                                
+                                // Upload the image
+                                const url = await uploadImage(file);
+                                
+                                // Insert the image at the current cursor position
+                                descriptionEditor.insertEmbed(range.index, 'image', url);
+                                descriptionEditor.setSelection(range.index + 1);
+                            } catch (error) {
+                                console.error('Image paste upload failed:', error);
+                                alert('Failed to upload pasted image: ' + error);
                             }
                         }
-                    });
-                    
-                    // Handle keyboard navigation for mentions
-                    editor.keystrokes.set('Enter', (data, cancel) => {
-                        if (mentionStart && mentionAutocompleteVisible && filteredUsers.length > 0) {
-                            cancel();
-                            selectMention(editor, filteredUsers[mentionSelectedIndex]);
-                            return false;
-                        }
-                    });
-                    
-                    editor.keystrokes.set('ArrowDown', (data, cancel) => {
-                        if (mentionStart && mentionAutocompleteVisible) {
-                            cancel();
-                            navigateMentions('down');
-                            return false;
-                        }
-                    });
-                    
-                    editor.keystrokes.set('ArrowUp', (data, cancel) => {
-                        if (mentionStart && mentionAutocompleteVisible) {
-                            cancel();
-                            navigateMentions('up');
-                            return false;
-                        }
-                    });
-                    
-                    editor.keystrokes.set('Escape', (data, cancel) => {
-                        if (mentionStart && mentionAutocompleteVisible) {
-                            cancel();
-                            hideMentionAutocomplete();
-                            mentionStart = null;
-                            mentionQuery = '';
-                            return false;
-                        }
-                    });
-                })
-                .catch(error => {
-                    console.error('Error initializing CKEditor:', error);
-                });
+                        break;
+                    }
+                }
+            });
+            
+            // Listen for changes
+            descriptionEditor.on('text-change', function() {
+                checkForChanges();
+            });
         } else {
-            // Editor already exists, just set the data
-            descriptionEditor.setData(descContent);
+            // Editor already exists, just update the content
+            if (descContent) {
+                descriptionEditor.root.innerHTML = descContent;
+            }
+            // Focus the editor
+            const qlEditor = editorDiv.querySelector('.ql-editor');
+            if (qlEditor) {
+                qlEditor.focus();
+            }
         }
         
         markChanged();
@@ -3824,6 +4408,8 @@ document.addEventListener('DOMContentLoaded', function() {
     const commentsList = document.getElementById('comments-list');
     const commentAvatars = document.getElementById('comment-avatars');
     const submitBtn = document.getElementById('comment-submit-btn');
+    const CURRENT_USER_ID = <?php echo intval($_SESSION['user_id'] ?? 0); ?>;
+    const IS_COMMENT_ADMIN = <?php echo (isSuperAdmin() || isOrgAdmin()) ? 'true' : 'false'; ?>;
     
     if (commentForm && submitBtn) {
         commentForm.addEventListener('submit', function(e) {
@@ -3911,18 +4497,41 @@ document.addEventListener('DOMContentLoaded', function() {
         const formattedDate = formatDate(commentDate);
         
         // Create comment HTML
+        const commentUserId = parseInt(comment.user_id || comment.user_table_id || 0, 10);
+        const canEdit = (commentUserId === CURRENT_USER_ID) || IS_COMMENT_ADMIN;
+        const actionsHtml = canEdit ? `
+            <div style="display:flex; gap:8px;">
+                <button onclick="editComment(${comment.id})" style="background:none; border:none; color: var(--blue); cursor:pointer; font-size:12px; padding:4px 8px;" title="Edit">
+                    <i class="fas fa-edit"></i>
+                </button>
+                <button onclick="deleteComment(${comment.id})" style="background:none; border:none; color:#ef4444; cursor:pointer; font-size:12px; padding:4px 8px;" title="Delete">
+                    <i class="fas fa-trash"></i>
+                </button>
+            </div>
+        ` : '';
+
         const commentHTML = `
             <div class="comment-item" id="comment-${comment.id}">
                 <div class="comment-avatar">
                     ${initials}
                 </div>
-                <div class="comment-content">
-                    <div class="comment-header">
-                        <span class="comment-author">${escapeHtml(comment.user_name)}</span>
-                        <span class="comment-date">${formattedDate}</span>
+                <div class="comment-content" style="flex: 1;">
+                    <div class="comment-header" style="display:flex; justify-content:space-between; align-items:center;">
+                        <div>
+                            <span class="comment-author">${escapeHtml(comment.user_name)}</span>
+                            <span class="comment-date">${formattedDate}</span>
+                        </div>
+                        ${actionsHtml}
                     </div>
-                    <div class="comment-text">
+                    <div class="comment-text" id="comment-text-${comment.id}">
                         ${commentText}
+                    </div>
+                    <div id="comment-edit-${comment.id}" style="display:none;">
+                        <textarea id="comment-edit-text-${comment.id}" style="width:100%; padding:8px; border:1px solid var(--border-color); border-radius:4px; font-size:14px; min-height:80px; resize:vertical;">${escapeHtml(comment.comment || '')}</textarea>
+                        <div style="display:flex; gap:8px; margin-top:8px;">
+                            <button onclick="saveComment(${comment.id})" style="background: var(--blue); color:white; border:none; padding:6px 12px; border-radius:4px; font-size:12px; cursor:pointer;">Save</button>
+                            <button onclick="cancelEditComment(${comment.id})" style="background: var(--page-bg); color: var(--text-primary); border: 1px solid var(--border-color); padding:6px 12px; border-radius:4px; font-size:12px; cursor:pointer;">Cancel</button>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -4048,6 +4657,320 @@ document.addEventListener('DOMContentLoaded', function() {
         }, 3000);
     }
 });
+
+// Time Log Modal Functions (Global scope for onclick handlers)
+function openAddTimeLogModal() {
+    const modal = document.getElementById('add-timelog-modal');
+    if (modal) {
+        modal.style.display = 'flex';
+        // Set today's date as default
+        const today = new Date().toISOString().split('T')[0];
+        const dateInput = document.getElementById('timelog-date');
+        if (dateInput) {
+            dateInput.value = today;
+        }
+    }
+}
+
+function closeAddTimeLogModal() {
+    const modal = document.getElementById('add-timelog-modal');
+    if (modal) {
+        modal.style.display = 'none';
+        // Reset form
+        const form = document.getElementById('add-timelog-form');
+        if (form) {
+            form.reset();
+            const dateInput = document.getElementById('timelog-date');
+            if (dateInput) {
+                dateInput.value = new Date().toISOString().split('T')[0];
+            }
+        }
+    }
+}
+
+// Close modal when clicking outside
+document.addEventListener('click', function(e) {
+    const modal = document.getElementById('add-timelog-modal');
+    if (modal && e.target === modal) {
+        closeAddTimeLogModal();
+    }
+});
+
+// Add Time Log Function
+async function addTimeLog(event) {
+    event.preventDefault();
+    
+    const form = document.getElementById('add-timelog-form');
+    if (!form) return;
+    
+    const submitBtn = form.querySelector('button[type="submit"]');
+    if (!submitBtn) return;
+    
+    const originalText = submitBtn.innerHTML;
+    
+    // Disable submit button
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Adding...';
+    
+    // Prepare form data
+    const formData = new FormData(form);
+    formData.append('add_timelog', '1');
+    
+    // Get task ID from URL
+    const taskId = new URLSearchParams(window.location.search).get('id');
+    
+    try {
+        const response = await fetch('task_view.php?id=' + taskId, {
+            method: 'POST',
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest'
+            },
+            body: formData
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            // Close modal
+            closeAddTimeLogModal();
+            
+            // Reload page to show new time log
+            window.location.reload();
+        } else {
+            alert(data.error || 'Error adding time log');
+        }
+    } catch (error) {
+        console.error('Error:', error);
+        alert('Error adding time log. Please try again.');
+    } finally {
+        // Re-enable submit button
+        submitBtn.disabled = false;
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = originalText;
+    }
+}
+
+// Edit Time Log Functions
+function editTimeLog(timelogId) {
+    // Fetch time log data
+    const taskId = new URLSearchParams(window.location.search).get('id');
+    fetch(`task_view.php?id=${taskId}&get_timelog=${timelogId}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                document.getElementById('edit-timelog-id').value = data.timelog.id;
+                document.getElementById('edit-timelog-date').value = data.timelog.log_date;
+                document.getElementById('edit-timelog-hours').value = data.timelog.hours;
+                document.getElementById('edit-timelog-minutes').value = data.timelog.minutes;
+                document.getElementById('edit-timelog-description').value = data.timelog.description || '';
+                document.getElementById('edit-timelog-modal').style.display = 'flex';
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('Error loading time log');
+        });
+}
+
+function closeEditTimeLogModal() {
+    document.getElementById('edit-timelog-modal').style.display = 'none';
+    document.getElementById('edit-timelog-form').reset();
+}
+
+async function updateTimeLog(event) {
+    event.preventDefault();
+    
+    const form = document.getElementById('edit-timelog-form');
+    const submitBtn = form.querySelector('button[type="submit"]');
+    const originalText = submitBtn.innerHTML;
+    
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Updating...';
+    
+    const formData = new FormData(form);
+    formData.append('update_timelog', '1');
+    
+    const taskId = new URLSearchParams(window.location.search).get('id');
+    
+    try {
+        const response = await fetch('task_view.php?id=' + taskId, {
+            method: 'POST',
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest'
+            },
+            body: formData
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            closeEditTimeLogModal();
+            window.location.reload();
+        } else {
+            alert(data.error || 'Error updating time log');
+        }
+    } catch (error) {
+        console.error('Error:', error);
+        alert('Error updating time log. Please try again.');
+    } finally {
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = originalText;
+    }
+}
+
+async function deleteTimeLog(timelogId) {
+    if (!confirm('Are you sure you want to delete this time log?')) {
+        return;
+    }
+    
+    const formData = new FormData();
+    formData.append('delete_timelog', '1');
+    formData.append('timelog_id', timelogId);
+    
+    const taskId = new URLSearchParams(window.location.search).get('id');
+    
+    try {
+        const response = await fetch('task_view.php?id=' + taskId, {
+            method: 'POST',
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest'
+            },
+            body: formData
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            window.location.reload();
+        } else {
+            alert(data.error || 'Error deleting time log');
+        }
+    } catch (error) {
+        console.error('Error:', error);
+        alert('Error deleting time log. Please try again.');
+    }
+}
+
+// Comment Edit Functions
+function editComment(commentId) {
+    const commentText = document.getElementById('comment-text-' + commentId);
+    const commentEdit = document.getElementById('comment-edit-' + commentId);
+    
+    if (commentText && commentEdit) {
+        commentText.style.display = 'none';
+        commentEdit.style.display = 'block';
+    }
+}
+
+function cancelEditComment(commentId) {
+    const commentText = document.getElementById('comment-text-' + commentId);
+    const commentEdit = document.getElementById('comment-edit-' + commentId);
+    
+    if (commentText && commentEdit) {
+        commentText.style.display = 'block';
+        commentEdit.style.display = 'none';
+    }
+}
+
+async function saveComment(commentId) {
+    const textarea = document.getElementById('comment-edit-text-' + commentId);
+    const newComment = textarea.value.trim();
+    
+    if (!newComment) {
+        alert('Comment cannot be empty');
+        return;
+    }
+    
+    const formData = new FormData();
+    formData.append('edit_comment', '1');
+    formData.append('comment_id', commentId);
+    formData.append('comment', newComment);
+    
+    const taskId = new URLSearchParams(window.location.search).get('id');
+    
+    try {
+        const response = await fetch('task_view.php?id=' + taskId, {
+            method: 'POST',
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest'
+            },
+            body: formData
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            // Update comment text
+            const commentText = document.getElementById('comment-text-' + commentId);
+            let formattedText = escapeHtml(newComment);
+            formattedText = formattedText.replace(/@(\w+)/g, '<span class="mention">@$1</span>');
+            formattedText = formattedText.replace(/\n/g, '<br>');
+            commentText.innerHTML = formattedText;
+            
+            cancelEditComment(commentId);
+        } else {
+            alert(data.error || 'Error updating comment');
+        }
+    } catch (error) {
+        console.error('Error:', error);
+        alert('Error updating comment. Please try again.');
+    }
+}
+
+async function deleteComment(commentId) {
+    if (!confirm('Are you sure you want to delete this comment?')) {
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append('delete_comment', '1');
+    formData.append('comment_id', commentId);
+
+    const taskId = new URLSearchParams(window.location.search).get('id');
+
+    try {
+        const response = await fetch('task_view.php?id=' + taskId, {
+            method: 'POST',
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest'
+            },
+            body: formData
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            const el = document.getElementById('comment-' + commentId);
+            if (el) el.remove();
+
+            const list = document.getElementById('comments-list');
+            if (list && list.querySelectorAll('.comment-item').length === 0) {
+                list.innerHTML = `
+                    <div class="no-comments" style="text-align: center; padding: 30px; color: var(--text-muted); font-size: 13px;">
+                        <i class="fas fa-comment-slash" style="font-size: 24px; margin-bottom: 8px; opacity: 0.3;"></i>
+                        <p>No comments yet. Start the discussion!</p>
+                    </div>
+                `;
+            }
+
+            // refresh avatars
+            if (typeof updateCommentAvatars === 'function') {
+                updateCommentAvatars();
+            }
+        } else {
+            alert(data.error || 'Error deleting comment');
+        }
+    } catch (error) {
+        console.error('Error:', error);
+        alert('Error deleting comment. Please try again.');
+    }
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
 </script>
 
 <?php include 'includes/footer.php'; ?>

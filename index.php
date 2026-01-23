@@ -34,6 +34,11 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 $_SESSION['email'] = $user['email'];
                 $_SESSION['organization_id'] = $user['organization_id'] ?? null;
                 
+                // Clear dashboard cache on login to fetch fresh data
+                if (function_exists('invalidateDashboardCache')) {
+                    invalidateDashboardCache();
+                }
+                
                 header('Location: dashboard');
                 exit();
             } else {
