@@ -276,17 +276,53 @@ if (isSuperAdmin()) {
     $projects = $conn->query($projects_query)->fetch_all(MYSQLI_ASSOC);
 }
 
-// Get selected project (default: first project)
-// Check URL first, then session, then default to first project
+// Get selected project: 1) URL, 2) session, 3) DB (last after re-login), 4) first project
+$allowed_project_ids = $projects ? array_column($projects, 'id') : [];
+$user_id = $_SESSION['user_id'] ?? null;
+
 if (isset($_GET['project_id'])) {
-    $selected_project_id = intval($_GET['project_id']);
-    $_SESSION['selected_project_id'] = $selected_project_id; // Store in session
+    $pid = intval($_GET['project_id']);
+    $selected_project_id = $pid;
+    $_SESSION['selected_project_id'] = $pid;
+    // Persist to DB so it's selected by default after re-login (only if user has access)
+    if ($user_id && in_array($pid, $allowed_project_ids)) {
+        $st = $conn->prepare("UPDATE users SET last_dashboard_project_id = ? WHERE id = ?");
+        if ($st) {
+            $st->bind_param("ii", $pid, $user_id);
+            $st->execute();
+        }
+    }
 } elseif (isset($_SESSION['selected_project_id']) && !empty($_SESSION['selected_project_id'])) {
     $selected_project_id = intval($_SESSION['selected_project_id']);
 } else {
-    $selected_project_id = !empty($projects) ? $projects[0]['id'] : null;
-    if ($selected_project_id) {
-        $_SESSION['selected_project_id'] = $selected_project_id; // Store default selection
+    // No URL, no session (e.g. after re-login): try last_dashboard_project_id from DB
+    $from_db = null;
+    if ($user_id) {
+        $st = $conn->prepare("SELECT last_dashboard_project_id FROM users WHERE id = ?");
+        if ($st) {
+            $st->bind_param("i", $user_id);
+            if ($st->execute()) {
+                $row = $st->get_result()->fetch_assoc();
+                $from_db = isset($row['last_dashboard_project_id']) ? (int)$row['last_dashboard_project_id'] : null;
+            }
+        }
+    }
+    if ($from_db && in_array($from_db, $allowed_project_ids)) {
+        $selected_project_id = $from_db;
+        $_SESSION['selected_project_id'] = $from_db;
+    } else {
+        $selected_project_id = !empty($projects) ? $projects[0]['id'] : null;
+        if ($selected_project_id) {
+            $_SESSION['selected_project_id'] = $selected_project_id;
+        }
+        // Clear stale DB value if last saved project is no longer allowed
+        if ($user_id && $from_db && !in_array($from_db, $allowed_project_ids)) {
+            $st = $conn->prepare("UPDATE users SET last_dashboard_project_id = NULL WHERE id = ?");
+            if ($st) {
+                $st->bind_param("i", $user_id);
+                $st->execute();
+            }
+        }
     }
 }
 
