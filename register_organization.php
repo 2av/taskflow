@@ -66,9 +66,9 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 if ($stmt->execute()) {
                     // Send OTP email
                     if (sendOTPVerificationEmail($org_email_normalized, 'Your Organization', $otp_code)) {
-                        // Store email in session and redirect directly to OTP page
+                        // Store email in session and redirect directly to OTP page (no email in URL for security)
                         $_SESSION['pending_verification_email'] = $org_email_normalized;
-                        header('Location: verify_otp?email=' . urlencode($org_email_normalized));
+                        header('Location: verify_otp');
                         exit();
                     } else {
                         $error = 'Registration successful but email could not be sent. Please contact support.';

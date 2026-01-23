@@ -49,9 +49,18 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['create_task'])) {
         // Include project_id in task_id to ensure uniqueness: PROJ-PROJECTID-TASKNUM
         $task_id = $project_code . '-' . $project_id . '-' . $task_num;
         
-        // Get default status_id (first status from organization's statuses)
+        // Get default status_id (use is_default_task if set, otherwise first status)
         $org_statuses = getStatuses($organization_id ?? null);
-        $default_status = !empty($org_statuses) ? $org_statuses[0] : null;
+        $default_status = null;
+        foreach ($org_statuses as $status) {
+            if ($status['is_default_task'] ?? 0) {
+                $default_status = $status;
+                break;
+            }
+        }
+        if (!$default_status && !empty($org_statuses)) {
+            $default_status = $org_statuses[0];
+        }
         $status_id = $default_status ? $default_status['id'] : null;
         $status_name = $default_status ? $default_status['name'] : 'To Do';
         
@@ -274,6 +283,19 @@ $page_title = $selected_project_name ? 'Tasks (' . htmlspecialchars($selected_pr
 
 $filter_status = isset($_GET['status']) ? (is_array($_GET['status']) ? $_GET['status'] : [$_GET['status']]) : [];
 $filter_status = array_filter($filter_status); // Remove empty values
+
+// If no status filter is set, use default filter statuses (can be multiple)
+if (empty($filter_status)) {
+    $default_filter_statuses = [];
+    foreach ($statuses as $status) {
+        if ($status['is_default_filter'] ?? 0) {
+            $default_filter_statuses[] = $status['name'];
+        }
+    }
+    if (!empty($default_filter_statuses)) {
+        $filter_status = $default_filter_statuses;
+    }
+}
 
 $filter_priority = isset($_GET['priority']) ? (is_array($_GET['priority']) ? $_GET['priority'] : [$_GET['priority']]) : [];
 $filter_priority = array_filter($filter_priority); // Remove empty values
@@ -542,14 +564,41 @@ $stats_query = "
         $task_stats = $conn->query($stats_query)->fetch_assoc();
     }
 
-// Get projects for filter (filtered by organization)
+// Get projects for filter (filtered by user assignment/creation)
 if (isSuperAdmin()) {
     $projects = $conn->query("SELECT * FROM projects ORDER BY name")->fetch_all(MYSQLI_ASSOC);
-$users = $conn->query("SELECT * FROM users WHERE status = 'active' AND deleted = 0 ORDER BY full_name")->fetch_all(MYSQLI_ASSOC);
-} else {
+    $users = $conn->query("SELECT * FROM users WHERE status = 'active' AND deleted = 0 ORDER BY full_name")->fetch_all(MYSQLI_ASSOC);
+} else if (isOrgAdmin()) {
+    // Org Admin sees all projects in their organization
     $org_id = getOrganizationId();
     $stmt = $conn->prepare("SELECT * FROM projects WHERE organization_id = ? ORDER BY name");
     $stmt->bind_param("i", $org_id);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $projects = $result->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+    
+    $stmt = $conn->prepare("SELECT * FROM users WHERE organization_id = ? AND status = 'active' AND deleted = 0 ORDER BY full_name");
+    $stmt->bind_param("i", $org_id);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $users = $result->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+} else {
+    // Project Manager and Team Members: only projects they're assigned to, created, or manage
+    $user_id = $_SESSION['user_id'];
+    $org_id = getOrganizationId();
+    
+    $projects_query = "
+        SELECT DISTINCT p.* 
+        FROM projects p
+        LEFT JOIN project_users pu ON p.id = pu.project_id
+        WHERE (p.project_manager_id = ? OR p.created_by = ? OR pu.user_id = ?)
+        AND p.organization_id = ?
+        ORDER BY p.name
+    ";
+    $stmt = $conn->prepare($projects_query);
+    $stmt->bind_param("iiii", $user_id, $user_id, $user_id, $org_id);
     $stmt->execute();
     $result = $stmt->get_result();
     $projects = $result->fetch_all(MYSQLI_ASSOC);
@@ -808,7 +857,7 @@ function generatePagination($current_page, $total_pages, $get_params = []) {
     if ($current_page > 1) {
         $prev_params = $get_params;
         $prev_params['page'] = $current_page - 1;
-        $prev_url = '?' . http_build_query($prev_params);
+        $prev_url = 'tasks.php?' . http_build_query($prev_params);
         $html .= '<a href="' . htmlspecialchars($prev_url) . '" class="pagination-btn" data-page="' . ($current_page - 1) . '"><i class="fas fa-chevron-left"></i></a>';
     } else {
         $html .= '<span class="pagination-btn disabled"><i class="fas fa-chevron-left"></i></span>';
@@ -821,7 +870,7 @@ function generatePagination($current_page, $total_pages, $get_params = []) {
     if ($start_page > 1) {
         $first_params = $get_params;
         $first_params['page'] = 1;
-        $first_url = '?' . http_build_query($first_params);
+        $first_url = 'tasks.php?' . http_build_query($first_params);
         $html .= '<a href="' . htmlspecialchars($first_url) . '" class="pagination-btn" data-page="1">1</a>';
         if ($start_page > 2) {
             $html .= '<span style="padding: 0 8px; color: var(--text-muted);">...</span>';
@@ -834,7 +883,7 @@ function generatePagination($current_page, $total_pages, $get_params = []) {
         } else {
             $page_params = $get_params;
             $page_params['page'] = $i;
-            $page_url = '?' . http_build_query($page_params);
+            $page_url = 'tasks.php?' . http_build_query($page_params);
             $html .= '<a href="' . htmlspecialchars($page_url) . '" class="pagination-btn" data-page="' . $i . '">' . $i . '</a>';
         }
     }
@@ -845,7 +894,7 @@ function generatePagination($current_page, $total_pages, $get_params = []) {
         }
         $last_params = $get_params;
         $last_params['page'] = $total_pages;
-        $last_url = '?' . http_build_query($last_params);
+        $last_url = 'tasks.php?' . http_build_query($last_params);
         $html .= '<a href="' . htmlspecialchars($last_url) . '" class="pagination-btn" data-page="' . $total_pages . '">' . $total_pages . '</a>';
     }
     
@@ -853,7 +902,7 @@ function generatePagination($current_page, $total_pages, $get_params = []) {
     if ($current_page < $total_pages) {
         $next_params = $get_params;
         $next_params['page'] = $current_page + 1;
-        $next_url = '?' . http_build_query($next_params);
+        $next_url = 'tasks.php?' . http_build_query($next_params);
         $html .= '<a href="' . htmlspecialchars($next_url) . '" class="pagination-btn" data-page="' . ($current_page + 1) . '"><i class="fas fa-chevron-right"></i></a>';
     } else {
         $html .= '<span class="pagination-btn disabled"><i class="fas fa-chevron-right"></i></span>';
@@ -918,11 +967,12 @@ if (isset($_GET['edit'])) {
 }
 $edit_task = null; // Keep for backward compatibility with modal code (commented out)
 
-// Check if this is an AJAX request for search suggestions
-if (isset($_GET['ajax_suggestions']) && !empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest') {
+// Check if this is an AJAX request for search suggestions (header search)
+if (isset($_GET['ajax_suggestions']) && isset($_GET['search_suggestions'])) {
     $suggestions_query = isset($_GET['search_suggestions']) ? trim($_GET['search_suggestions']) : '';
     
-    if (empty($suggestions_query)) {
+    if (empty($suggestions_query) || strlen($suggestions_query) < 3) {
+        header('Content-Type: application/json');
         echo json_encode(['success' => false, 'suggestions' => []]);
         $conn->close();
         exit();
@@ -983,7 +1033,7 @@ if (isset($_GET['ajax_suggestions']) && !empty($_SERVER['HTTP_X_REQUESTED_WITH']
                 ELSE 4
             END,
             t.created_at DESC
-        LIMIT 10
+        LIMIT 5
     ";
     
     // Add ordering parameters
@@ -1116,8 +1166,7 @@ if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQ
             $tasks_html .= '</td>';
             // Priority column
             $tasks_html .= '<td class="px-6 py-4 whitespace-nowrap text-center">';
-            $tasks_html .= '<span class="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full ' . $priority_style['bg'] . ' ' . $priority_style['text'] . '">';
-            $tasks_html .= '<i class="fas ' . $priority_style['icon'] . ' ' . $priority_style['icon_color'] . ' text-xs"></i>';
+            $tasks_html .= '<span class="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full" style="background: transparent; color: var(--text-primary);">';
             $tasks_html .= htmlspecialchars($task['priority']);
             $tasks_html .= '</span>';
             $tasks_html .= '</td>';
@@ -1321,423 +1370,6 @@ $conn->close();
 include 'includes/header.php';
 ?>
 
-<style>
-.tasks-page-container {
-    padding: 24px;
-    background: var(--page-bg);
-    min-height: calc(100vh - 60px);
-}
-
-.tasks-overview-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 24px;
-}
-
-.tasks-overview-title {
-    font-size: 20px;
-    font-weight: 500;
-    color: var(--text-primary);
-    margin: 0;
-}
-
-.tasks-summary-stats {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    flex-wrap: wrap;
-    margin-bottom: 24px;
-}
-
-.stat-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 16px;
-    font-size: 14px;
-    font-weight: 500;
-    color: var(--text-primary);
-    background: var(--card-bg);
-    border: 1px solid var(--border-color);
-    text-decoration: none;
-    transition: all 0.2s ease;
-}
-
-.stat-badge:hover {
-    border-color: var(--blue);
-    background: var(--blue-light);
-}
-
-.stat-badge.active {
-    background: var(--blue);
-    color: white;
-    border-color: var(--blue);
-}
-
-.stat-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    flex-shrink: 0;
-}
-
-.stat-dot.active { background: var(--chart-green); }
-.stat-dot.pending { background: var(--chart-yellow); }
-.stat-dot.failed { background: var(--chart-red); }
-.stat-dot.closed { background: var(--chart-gray); }
-
-.add-task-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 10px 20px;
-    background: var(--blue);
-    color: white;
-    border: none;
-    font-size: 14px;
-    font-weight: 500;
-    text-decoration: none;
-    cursor: pointer;
-    transition: all 0.2s ease;
-}
-
-.add-task-btn:hover {
-    background: var(--blue-dark);
-}
-
-.tasks-filters-bar {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    margin-bottom: 20px;
-    flex-wrap: wrap;
-}
-
-.search-input-wrapper {
-    flex: 1;
-    min-width: 250px;
-    position: relative;
-}
-
-.search-input {
-    width: 100%;
-    padding: 10px 40px 10px 40px;
-    border: 1px solid var(--border-color);
-    font-size: 14px;
-    background: var(--card-bg);
-    color: var(--text-primary);
-    transition: all 0.2s ease;
-}
-
-.search-input:focus {
-    outline: none;
-    border-color: var(--blue);
-    box-shadow: 0 0 0 3px var(--blue-light);
-}
-
-.search-icon {
-    position: absolute;
-    left: 12px;
-    top: 50%;
-    transform: translateY(-50%);
-    color: var(--text-muted);
-    font-size: 14px;
-}
-
-.filter-dropdown {
-    padding: 10px 36px 10px 12px;
-    border: 1px solid var(--border-color);
-    font-size: 14px;
-    background: var(--card-bg);
-    color: var(--text-primary);
-    cursor: pointer;
-    appearance: none;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236B7280' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 12px center;
-    transition: all 0.2s ease;
-    min-width: 120px;
-}
-
-.filter-dropdown:hover {
-    border-color: var(--blue);
-}
-
-.filter-dropdown:focus {
-    outline: none;
-    border-color: var(--blue);
-    box-shadow: 0 0 0 3px var(--blue-light);
-}
-
-.tasks-table-container {
-    background: var(--card-bg);
-    border: 1px solid var(--border-color);
-    box-shadow: 0 1px 3px var(--shadow);
-    overflow: hidden;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-}
-
-.tasks-table {
-    width: 100%;
-    border-collapse: collapse;
-    min-width: 800px;
-}
-
-.tasks-table thead {
-    background: var(--text-primary);
-}
-
-.tasks-table th {
-    padding: 12px 16px;
-    text-align: left;
-    font-size: 12px;
-    font-weight: 500;
-    color: white;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-
-.tasks-table tbody tr {
-    border-bottom: 1px solid var(--border-color);
-    transition: background-color 0.2s ease;
-}
-
-.tasks-table tbody tr:hover {
-    background: var(--blue-light);
-}
-
-.tasks-table tbody tr:last-child {
-    border-bottom: none;
-}
-
-.tasks-table td {
-    padding: 16px;
-    font-size: 14px;
-    color: var(--text-primary);
-}
-
-.task-checkbox {
-    width: 18px;
-    height: 18px;
-    cursor: pointer;
-    accent-color: var(--blue);
-}
-
-.task-name-cell {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-}
-
-.task-name-text {
-    font-weight: 400;
-    color: var(--text-primary);
-}
-
-.task-project {
-    color: var(--text-secondary);
-    font-size: 13px;
-}
-
-.table-status-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 10px;
-    
-    font-size: 12px;
-    font-weight: 500;
-}
-
-.table-status-badge .badge-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-}
-
-.table-status-active {
-    background: var(--chart-green);
-    color: white;
-}
-
-.table-status-active .badge-dot {
-    background: white;
-}
-
-.table-status-pending {
-    background: var(--chart-yellow);
-    color: var(--text-primary);
-}
-
-.table-status-pending .badge-dot {
-    background: var(--text-primary);
-}
-
-.table-status-failed {
-    background: var(--chart-red);
-    color: white;
-}
-
-.table-status-failed .badge-dot {
-    background: white;
-}
-
-.table-status-closed {
-    background: var(--closed-bg);
-    color: var(--closed-text);
-}
-
-.table-status-closed .badge-dot {
-    background: var(--closed-text);
-}
-
-.table-priority-badge {
-    display: inline-flex;
-    align-items: center;
-    padding: 4px 10px;
-    
-    font-size: 12px;
-    font-weight: 500;
-}
-
-.priority-high {
-    background: var(--chart-yellow);
-    color: var(--text-primary);
-}
-
-.priority-medium {
-    background: var(--chart-red);
-    color: white;
-}
-
-.priority-low {
-    background: var(--chart-gray);
-    color: var(--text-primary);
-}
-
-.assignee-avatar {
-    width: 32px;
-    height: 32px;
-    border-radius: 50%;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 12px;
-    font-weight: 600;
-    background: var(--blue-light);
-    color: var(--blue-dark);
-}
-
-.due-date-text {
-    font-size: 13px;
-    color: var(--text-primary);
-}
-
-.pagination-container {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-top: 24px;
-    padding-top: 20px;
-    border-top: 1px solid var(--border-color);
-}
-
-.pagination-info {
-    font-size: 13px;
-    color: var(--text-secondary);
-}
-
-.pagination-controls {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-
-.pagination-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 32px;
-    height: 32px;
-    border: 1px solid var(--border-color);
-    
-    background: var(--card-bg);
-    color: var(--text-primary);
-    text-decoration: none;
-    font-size: 13px;
-    font-weight: 500;
-    transition: all 0.2s ease;
-    cursor: pointer;
-}
-
-.pagination-btn:hover:not(.disabled):not(.active) {
-    border-color: var(--blue);
-    color: var(--blue);
-}
-
-.pagination-btn.active {
-    background: var(--blue);
-    color: white;
-    border-color: var(--blue);
-}
-
-.pagination-btn.disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-}
-
-/* Mobile Responsive Styles */
-@media (max-width: 768px) {
-    .tasks-page-container {
-        padding: 16px;
-    }
-    
-    .tasks-table-container {
-        overflow-x: auto;
-        -webkit-overflow-scrolling: touch;
-        width: 100%;
-    }
-    
-    .tasks-table {
-        min-width: 700px;
-    }
-    
-    .tasks-table th,
-    .tasks-table td {
-        padding: 12px 8px;
-        font-size: 13px;
-    }
-    
-    .tasks-filters-bar {
-        flex-direction: column;
-        gap: 8px;
-    }
-    
-    .search-input-wrapper {
-        min-width: 100%;
-    }
-    
-    .tasks-overview-header {
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 12px;
-    }
-    
-    .tasks-summary-stats {
-        flex-wrap: wrap;
-        gap: 8px;
-    }
-    
-    .stat-badge {
-        font-size: 12px;
-        padding: 6px 12px;
-    }
-}
-</style>
 
 <div class="tasks-page-container">
     <!-- Tasks Overview Header -->
@@ -1993,7 +1625,7 @@ include 'includes/header.php';
                                     <select name="status_id" 
                                             onchange="this.form.submit();" 
                                             onclick="event.stopPropagation();"
-                                            style="padding: 4px 24px 4px 8px; border: 1px solid var(--border-color);  font-size: 12px; font-weight: 500; cursor: pointer; background: <?php echo htmlspecialchars($status_color); ?>; color: white; appearance: none; background-image: url('data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 12 12\'%3E%3Cpath fill=\'%23ffffff\' d=\'M6 9L1 4h10z\'/%3E%3C/svg%3E'); background-repeat: no-repeat; background-position: right 8px center; min-width: 110px;">
+                                            style="padding: 4px 24px 4px 8px; border: 1px solid var(--border-color);  font-size: 12px; font-weight: 500; cursor: pointer; background: white; color: var(--text-primary); appearance: none; background-image: url('data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 12 12\'%3E%3Cpath fill=\'%23333333\' d=\'M6 9L1 4h10z\'/%3E%3C/svg%3E'); background-repeat: no-repeat; background-position: right 8px center; min-width: 110px;">
                                         <?php foreach ($statuses as $status_option): ?>
                                             <option value="<?php echo $status_option['id']; ?>" <?php echo ($task_status_id == $status_option['id']) ? 'selected' : ''; ?>>
                                                 <?php echo htmlspecialchars($status_option['name']); ?>
@@ -2027,7 +1659,7 @@ include 'includes/header.php';
     </div>
 
     <!-- Pagination -->
-    <div class="pagination-container">
+    <div class="pagination-container" id="paginationContainer">
         <div class="pagination-info">
             Showing <?php echo min(($current_page - 1) * $items_per_page + 1, $total_items); ?> to <?php echo min($current_page * $items_per_page, $total_items); ?> of <?php echo $total_items; ?> tasks
         </div>
@@ -2393,12 +2025,17 @@ document.addEventListener('DOMContentLoaded', function() {
             const target = event.target;
             const tagName = target.tagName;
             
+            // Check if clicking on pagination links (they should work normally)
+            if (target.closest('.pagination-container') || target.closest('.pagination-controls')) {
+                return; // Let pagination links work normally
+            }
+            
             // Check if clicking directly on interactive elements
             if (tagName === 'INPUT' || 
                 tagName === 'SELECT' || 
                 tagName === 'BUTTON' ||
                 tagName === 'FORM' ||
-                tagName === 'A') {
+                (tagName === 'A' && !target.closest('.pagination-container'))) {
                 event.stopPropagation();
                 return false;
             }

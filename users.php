@@ -384,18 +384,6 @@ include 'includes/header.php';
                        value="<?php echo htmlspecialchars($edit_user['email'] ?? ''); ?>">
             </div>
             
-            <?php if ($edit_user): ?>
-                <div class="form-group">
-                    <label for="password">Password (leave blank to keep current)</label>
-                    <div class="password-input-wrapper">
-                        <input type="password" id="password" name="password">
-                        <button type="button" class="password-toggle-icon" onclick="togglePassword('password')" title="Show/Hide Password">
-                            <i class="fas fa-eye" id="password-toggle-icon"></i>
-                        </button>
-                    </div>
-                </div>
-            <?php endif; ?>
-            
             <div class="form-group">
                 <label for="full_name">Full Name *</label>
                 <input type="text" id="full_name" name="full_name" required 

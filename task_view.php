@@ -270,9 +270,19 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['add_comment'])) {
     $comment = trim($_POST['comment']);
     $user_id = $_SESSION['user_id'];
     $parent_id = !empty($_POST['parent_id']) ? intval($_POST['parent_id']) : null;
+    $is_ajax = !empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest';
+    $error = '';
     
     if (empty($comment)) {
         $error = 'Comment cannot be empty';
+        if ($is_ajax) {
+            header('Content-Type: application/json');
+            echo json_encode([
+                'success' => false,
+                'error' => $error
+            ]);
+            exit();
+        }
     } else {
         // Check if parent_id column exists, if not use NULL
         $check_column = $conn->query("SHOW COLUMNS FROM task_comments LIKE 'parent_id'");
@@ -301,16 +311,60 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['add_comment'])) {
                 $stmt->bind_param("iisi", $task_id, $user_id, $comment, $parent_id);
             } else {
                 $stmt = $conn->prepare("INSERT INTO task_comments (task_id, user_id, comment, parent_id) VALUES (?, ?, ?, NULL)");
-        $stmt->bind_param("iis", $task_id, $user_id, $comment);
+                $stmt->bind_param("iis", $task_id, $user_id, $comment);
             }
         
-        if ($stmt->execute()) {
-            $message = 'Comment added successfully';
-                // Refresh page to show new comment
-                header('Location: task_view?id=' . $task_id);
-                exit();
+            if ($stmt->execute()) {
+                $comment_id = $conn->insert_id;
+                $message = 'Comment added successfully';
+                
+                // If AJAX request, return JSON response
+                if ($is_ajax) {
+                    // Get the newly added comment with user details
+                    $new_comment_stmt = $conn->prepare("
+                        SELECT c.*, u.full_name as user_name, u.email, u.id as user_table_id
+                        FROM task_comments c
+                        JOIN users u ON c.user_id = u.id
+                        WHERE c.id = ?
+                    ");
+                    $new_comment_stmt->bind_param("i", $comment_id);
+                    $new_comment_stmt->execute();
+                    $new_comment = $new_comment_stmt->get_result()->fetch_assoc();
+                    $new_comment_stmt->close();
+                    
+                    header('Content-Type: application/json');
+                    echo json_encode([
+                        'success' => true,
+                        'message' => $message,
+                        'comment' => $new_comment
+                    ]);
+                    exit();
+                } else {
+                    // Regular form submission - redirect
+                    header('Location: task_view?id=' . $task_id);
+                    exit();
+                }
+            } else {
+                $error = 'Error adding comment';
+                if ($is_ajax) {
+                    header('Content-Type: application/json');
+                    echo json_encode([
+                        'success' => false,
+                        'error' => $error
+                    ]);
+                    exit();
+                }
+            }
+            $stmt->close();
         } else {
-            $error = 'Error adding comment';
+            // Handle error (invalid parent_id or other validation errors)
+            if ($is_ajax) {
+                header('Content-Type: application/json');
+                echo json_encode([
+                    'success' => false,
+                    'error' => $error
+                ]);
+                exit();
             }
         }
     }
@@ -631,22 +685,35 @@ $has_parent_id = $check_column->num_rows > 0;
 // Get comments with replies (nested structure)
 if ($has_parent_id) {
     $comments_stmt = $conn->prepare("
-        SELECT c.*, u.full_name as user_name, u.email, u.id as user_table_id
+        SELECT DISTINCT c.id, c.task_id, c.user_id, c.comment, c.parent_id, c.created_at,
+               u.full_name as user_name, u.email, u.id as user_table_id
         FROM task_comments c
         JOIN users u ON c.user_id = u.id
         WHERE c.task_id = ? AND (c.parent_id IS NULL OR c.parent_id = 0)
-        ORDER BY c.created_at ASC
+        ORDER BY c.created_at DESC
     ");
     $comments_stmt->bind_param("i", $task_id);
     $comments_stmt->execute();
-    $comments = $comments_stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $comments_raw = $comments_stmt->get_result()->fetch_all(MYSQLI_ASSOC);
     $comments_stmt->close();
+
+    // Remove duplicates by comment ID
+    $comments = [];
+    $seen_ids = [];
+    foreach ($comments_raw as $comment) {
+        $comment_id = intval($comment['id']);
+        if (!in_array($comment_id, $seen_ids)) {
+            $comments[] = $comment;
+            $seen_ids[] = $comment_id;
+        }
+    }
 
     // Get replies for each comment
     foreach ($comments as &$comment) {
         $comment_id = intval($comment['id']);
         $replies_stmt = $conn->prepare("
-            SELECT c.*, u.full_name as user_name, u.email, u.id as user_table_id
+            SELECT DISTINCT c.id, c.task_id, c.user_id, c.comment, c.parent_id, c.created_at,
+                   u.full_name as user_name, u.email, u.id as user_table_id
             FROM task_comments c
             JOIN users u ON c.user_id = u.id
             WHERE c.parent_id = ? AND c.task_id = ?
@@ -654,21 +721,43 @@ if ($has_parent_id) {
         ");
         $replies_stmt->bind_param("ii", $comment_id, $task_id);
         $replies_stmt->execute();
-        $comment['replies'] = $replies_stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $replies_raw = $replies_stmt->get_result()->fetch_all(MYSQLI_ASSOC);
         $replies_stmt->close();
+        
+        // Remove duplicate replies by ID
+        $replies = [];
+        $seen_reply_ids = [];
+        foreach ($replies_raw as $reply) {
+            $reply_id = intval($reply['id']);
+            if (!in_array($reply_id, $seen_reply_ids)) {
+                $replies[] = $reply;
+                $seen_reply_ids[] = $reply_id;
+            }
+        }
+        $comment['replies'] = $replies;
     }
 } else {
     // If parent_id doesn't exist, get all comments as top-level
     $comments_query = "
-        SELECT c.*, u.full_name as user_name, u.email, u.id as user_table_id
-    FROM task_comments c
-    JOIN users u ON c.user_id = u.id
-    WHERE c.task_id = $task_id
-    ORDER BY c.created_at ASC
+        SELECT DISTINCT c.id, c.task_id, c.user_id, c.comment, c.created_at,
+               u.full_name as user_name, u.email, u.id as user_table_id
+        FROM task_comments c
+        JOIN users u ON c.user_id = u.id
+        WHERE c.task_id = $task_id
+        ORDER BY c.created_at ASC
     ";
-    $comments = $conn->query($comments_query)->fetch_all(MYSQLI_ASSOC);
-    foreach ($comments as &$comment) {
-        $comment['replies'] = [];
+    $comments_raw = $conn->query($comments_query)->fetch_all(MYSQLI_ASSOC);
+    
+    // Remove duplicates by comment ID
+    $comments = [];
+    $seen_ids = [];
+    foreach ($comments_raw as $comment) {
+        $comment_id = intval($comment['id']);
+        if (!in_array($comment_id, $seen_ids)) {
+            $comment['replies'] = [];
+            $comments[] = $comment;
+            $seen_ids[] = $comment_id;
+        }
     }
 }
 
@@ -1549,6 +1638,27 @@ include 'includes/header.php';
     color: #94a3b8;
     font-style: italic;
 }
+@keyframes slideIn {
+    from {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+@keyframes slideOut {
+    from {
+        transform: translateX(0);
+        opacity: 1;
+    }
+    to {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+}
 </style>
 
 <style>
@@ -1980,7 +2090,7 @@ body .content-wrapper:has(.task-view-page) {
 
 .comments-activity-section {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr;
     gap: 24px;
     margin-top: 24px;
 }
@@ -1990,7 +2100,8 @@ body .content-wrapper:has(.task-view-page) {
     border-radius: 10px;
     border: 1px solid var(--border-color);
     box-shadow: 0 1px 3px var(--shadow);
-    padding: 20px;
+    padding: 24px;
+    width: 100%;
 }
 
 .comments-panel-header {
@@ -2015,13 +2126,13 @@ body .content-wrapper:has(.task-view-page) {
 
 .comment-textarea {
     width: 100%;
-    padding: 12px;
+    padding: 16px;
     border: 1px solid var(--border-color);
-
+    border-radius: 8px;
     font-size: 14px;
     font-family: inherit;
     resize: vertical;
-    min-height: 80px;
+    min-height: 150px;
     margin-bottom: 8px;
 }
 
@@ -2197,6 +2308,27 @@ body .content-wrapper:has(.task-view-page) {
     
     .comments-activity-section {
         grid-template-columns: 1fr;
+    }
+}
+@keyframes slideIn {
+    from {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+@keyframes slideOut {
+    from {
+        transform: translateX(0);
+        opacity: 1;
+    }
+    to {
+        transform: translateX(100%);
+        opacity: 0;
     }
 }
 </style>
@@ -2517,10 +2649,20 @@ body .content-wrapper:has(.task-view-page) {
                                         <i class="fas fa-paperclip"></i>
                                         <span>Attach File</span>
                                     </button>
-                                    <div class="comment-avatars">
+                                    <div class="comment-avatars" id="comment-avatars">
                                         <?php 
-                                        // Show recent commenters avatars
-                                        $recent_commenters = array_slice($comments, 0, 3);
+                                        // Get unique commenters (by user_id) to show avatars
+                                        $unique_commenters = [];
+                                        $seen_user_ids = [];
+                                        foreach ($comments as $commenter) {
+                                            $user_id = isset($commenter['user_id']) ? $commenter['user_id'] : (isset($commenter['user_table_id']) ? $commenter['user_table_id'] : null);
+                                            if ($user_id && !in_array($user_id, $seen_user_ids)) {
+                                                $unique_commenters[] = $commenter;
+                                                $seen_user_ids[] = $user_id;
+                                            }
+                                        }
+                                        // Show up to 3 unique commenters
+                                        $recent_commenters = array_slice($unique_commenters, 0, 3);
                                         foreach ($recent_commenters as $commenter):
                                             $commenter_initials = getInitials($commenter['user_name']);
                                         ?>
@@ -2530,17 +2672,18 @@ body .content-wrapper:has(.task-view-page) {
                                         <?php endforeach; ?>
                                     </div>
                                 </div>
-                                <button type="submit" name="add_comment" class="task-action-btn" style="background: var(--blue); color: white; border: none;">
+                                <button type="submit" name="add_comment" id="comment-submit-btn" class="task-action-btn" style="background: var(--blue); color: white; border: none;">
                                     <i class="fas fa-paper-plane"></i>
                                     <span>Send</span>
                                 </button>
                             </div>
                             <input type="hidden" name="parent_id" id="parent_id" value="">
+                            <input type="hidden" name="task_id" value="<?php echo $task_id; ?>">
                         </form>
                     </div>
                     
                     <!-- Recent Comments -->
-                    <div class="comments-list" style="max-height: 400px; overflow-y: auto;">
+                    <div class="comments-list" id="comments-list" style="max-height: 600px; overflow-y: auto;">
                         <?php if (empty($comments)): ?>
                             <div class="no-comments" style="text-align: center; padding: 30px; color: var(--text-muted); font-size: 13px;">
                                 <i class="fas fa-comment-slash" style="font-size: 24px; margin-bottom: 8px; opacity: 0.3;"></i>
@@ -3673,6 +3816,238 @@ function clearDueDateField() {
         checkForChanges();
     }
 }
+
+// Handle comment form submission via AJAX
+document.addEventListener('DOMContentLoaded', function() {
+    const commentForm = document.getElementById('commentForm');
+    const commentTextarea = document.getElementById('comment');
+    const commentsList = document.getElementById('comments-list');
+    const commentAvatars = document.getElementById('comment-avatars');
+    const submitBtn = document.getElementById('comment-submit-btn');
+    
+    if (commentForm && submitBtn) {
+        commentForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            
+            const commentText = commentTextarea.value.trim();
+            if (!commentText) {
+                return;
+            }
+            
+            // Disable submit button
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> <span>Sending...</span>';
+            
+            // Prepare form data
+            const formData = new FormData(commentForm);
+            formData.append('add_comment', '1');
+            
+            // Get task ID from hidden input or URL
+            const taskId = document.querySelector('input[name="task_id"]')?.value || new URLSearchParams(window.location.search).get('id');
+            
+            // Send AJAX request
+            fetch('task_view.php?id=' + taskId, {
+                method: 'POST',
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest'
+                },
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // Clear textarea
+                    commentTextarea.value = '';
+                    
+                    // Add new comment to the list
+                    addCommentToDOM(data.comment);
+                    
+                    // Update comment avatars
+                    updateCommentAvatars();
+                    
+                    // Show success message (optional)
+                    showCommentMessage('Comment added successfully', 'success');
+                } else {
+                    // Show error message
+                    showCommentMessage(data.error || 'Error adding comment', 'error');
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                showCommentMessage('Error adding comment. Please try again.', 'error');
+            })
+            .finally(() => {
+                // Re-enable submit button
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = '<i class="fas fa-paper-plane"></i> <span>Send</span>';
+            });
+        });
+    }
+    
+    // Function to add comment to DOM
+    function addCommentToDOM(comment) {
+        // Remove "no comments" message if exists
+        const noComments = commentsList.querySelector('.no-comments');
+        if (noComments) {
+            noComments.remove();
+        }
+        
+        // Generate initials
+        const nameParts = comment.user_name.split(' ');
+        let initials = '';
+        if (nameParts.length >= 2) {
+            initials = (nameParts[0].charAt(0) + nameParts[nameParts.length - 1].charAt(0)).toUpperCase();
+        } else {
+            initials = comment.user_name.substring(0, 2).toUpperCase();
+        }
+        
+        // Format comment text with mentions
+        let commentText = escapeHtml(comment.comment);
+        commentText = commentText.replace(/@(\w+)/g, '<span class="mention">@$1</span>');
+        commentText = commentText.replace(/\n/g, '<br>');
+        
+        // Format date
+        const commentDate = new Date(comment.created_at);
+        const formattedDate = formatDate(commentDate);
+        
+        // Create comment HTML
+        const commentHTML = `
+            <div class="comment-item" id="comment-${comment.id}">
+                <div class="comment-avatar">
+                    ${initials}
+                </div>
+                <div class="comment-content">
+                    <div class="comment-header">
+                        <span class="comment-author">${escapeHtml(comment.user_name)}</span>
+                        <span class="comment-date">${formattedDate}</span>
+                    </div>
+                    <div class="comment-text">
+                        ${commentText}
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        // Insert at the beginning of comments list (latest on top)
+        commentsList.insertAdjacentHTML('afterbegin', commentHTML);
+        
+        // Scroll to top to show new comment
+        const newComment = document.getElementById('comment-' + comment.id);
+        if (newComment) {
+            // Scroll to top of comments list to show the new comment
+            commentsList.scrollTop = 0;
+            // Add highlight effect
+            newComment.style.backgroundColor = '#e0f2fe';
+            setTimeout(() => {
+                newComment.style.transition = 'background-color 0.5s';
+                newComment.style.backgroundColor = '#ffffff';
+            }, 1000);
+        }
+    }
+    
+    // Function to update comment avatars
+    function updateCommentAvatars() {
+        const commentsList = document.getElementById('comments-list');
+        const avatarContainer = document.getElementById('comment-avatars');
+        if (!commentsList || !avatarContainer) return;
+        
+        // Get all comment items
+        const commentItems = commentsList.querySelectorAll('.comment-item');
+        const uniqueCommenters = new Map();
+        
+        // Extract unique commenters from existing comments
+        commentItems.forEach(commentItem => {
+            const authorElement = commentItem.querySelector('.comment-author');
+            if (authorElement) {
+                const userName = authorElement.textContent.trim();
+                const commentId = commentItem.id.replace('comment-', '');
+                
+                // Use user name as key to ensure uniqueness
+                if (!uniqueCommenters.has(userName)) {
+                    // Generate initials
+                    const nameParts = userName.split(' ');
+                    let initials = '';
+                    if (nameParts.length >= 2) {
+                        initials = (nameParts[0].charAt(0) + nameParts[nameParts.length - 1].charAt(0)).toUpperCase();
+                    } else {
+                        initials = userName.substring(0, 2).toUpperCase();
+                    }
+                    
+                    uniqueCommenters.set(userName, {
+                        name: userName,
+                        initials: initials
+                    });
+                }
+            }
+        });
+        
+        // Clear existing avatars
+        avatarContainer.innerHTML = '';
+        
+        // Add unique avatars (max 3)
+        const uniqueArray = Array.from(uniqueCommenters.values()).slice(0, 3);
+        uniqueArray.forEach(commenter => {
+            const avatarDiv = document.createElement('div');
+            avatarDiv.className = 'comment-avatar-small';
+            avatarDiv.title = commenter.name;
+            avatarDiv.textContent = commenter.initials;
+            avatarContainer.appendChild(avatarDiv);
+        });
+    }
+    
+    // Helper function to escape HTML
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+    
+    // Helper function to format date
+    function formatDate(date) {
+        const day = String(date.getDate()).padStart(2, '0');
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const year = date.getFullYear();
+        const hours = String(date.getHours()).padStart(2, '0');
+        const minutes = String(date.getMinutes()).padStart(2, '0');
+        const ampm = date.getHours() >= 12 ? 'PM' : 'AM';
+        const displayHours = date.getHours() % 12 || 12;
+        return `${day}-${month}-${year} ${displayHours}:${minutes} ${ampm}`;
+    }
+    
+    // Function to show comment message
+    function showCommentMessage(message, type) {
+        // Remove existing message if any
+        const existingMsg = document.querySelector('.comment-message');
+        if (existingMsg) {
+            existingMsg.remove();
+        }
+        
+        // Create message element
+        const msgDiv = document.createElement('div');
+        msgDiv.className = 'comment-message';
+        msgDiv.style.cssText = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 12px 20px;
+            background: ${type === 'success' ? '#10b981' : '#ef4444'};
+            color: white;
+            border-radius: 6px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            z-index: 10000;
+            font-size: 14px;
+            animation: slideIn 0.3s ease;
+        `;
+        msgDiv.textContent = message;
+        document.body.appendChild(msgDiv);
+        
+        // Remove after 3 seconds
+        setTimeout(() => {
+            msgDiv.style.animation = 'slideOut 0.3s ease';
+            setTimeout(() => msgDiv.remove(), 300);
+        }, 3000);
+    }
+});
 </script>
 
 <?php include 'includes/footer.php'; ?>

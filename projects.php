@@ -211,14 +211,15 @@ if (isset($_GET['updated'])) {
 include 'includes/header.php';
 ?>
 
-<div style="width: 100%; padding: 20px;">
+
+<div class="projects-page-container">
     <!-- Page Header -->
-    <div class="flex items-center justify-between mb-6" style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px;">
+    <div class="projects-header">
         <div>
-            <h1 class="text-3xl font-semibold text-gray-900" style="font-size: 28px; font-weight: 600; color: #1e293b; margin: 0;">Projects</h1>
-            <p class="text-gray-500 mt-1" style="color: #64748b; margin-top: 4px; font-size: 14px;">Manage and track all your projects</p>
+            <h1 class="projects-title">Projects</h1>
+            <p class="projects-subtitle">Manage and track all your projects</p>
         </div>
-        <button class="btn btn-primary modal-trigger" data-modal="projectModal" title="Add New Project" style="display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px; background: linear-gradient(135deg, #14b8a6 0%, #0d9488 100%); color: white; border: none; border-radius: 8px; font-weight: 500; cursor: pointer; transition: all 0.2s; box-shadow: 0 2px 4px rgba(20, 184, 166, 0.3);">
+        <button class="add-project-btn modal-trigger" data-modal="projectModal" title="Add New Project">
             <i class="fas fa-plus"></i>
             <span>Add Project</span>
         </button>
@@ -239,8 +240,8 @@ include 'includes/header.php';
     <?php endif; ?>
 
     <!-- Projects Table -->
-    <div class="table-container">
-        <table>
+    <div class="tasks-table-container">
+        <table class="tasks-table">
             <thead>
                 <tr>
                     <th>Name</th>
@@ -255,70 +256,81 @@ include 'includes/header.php';
             <tbody>
                 <?php if (empty($projects)): ?>
                     <tr>
-                        <td colspan="7" style="text-align: center; padding: 40px 20px; color: #94a3b8;">
-                            <i class="fas fa-folder-open" style="font-size: 48px; margin-bottom: 12px; opacity: 0.3; display: block;"></i>
-                            <p style="font-size: 16px; margin: 0;">No projects found</p>
-                            <p style="font-size: 14px; margin-top: 8px; color: #cbd5e1;">Create your first project to get started</p>
+                        <td colspan="7" style="text-align: center; padding: 48px 16px; color: var(--text-muted);">
+                            <i class="fas fa-folder-open" style="font-size: 48px; opacity: 0.3; margin-bottom: 12px; display: block;"></i>
+                            <p style="margin: 0; font-size: 14px;">No projects found</p>
+                            <p style="margin: 8px 0 0 0; font-size: 12px; color: var(--text-secondary);">Create your first project to get started</p>
                         </td>
                     </tr>
                 <?php else: ?>
                     <?php foreach ($projects as $project): ?>
-                        <tr>
+                        <tr style="cursor: pointer; transition: background-color 0.2s;" onclick="window.location.href='tasks?project_id=<?php echo $project['id']; ?>'">
                             <td>
-                                <strong style="color: #1e293b; font-size: 15px;"><?php echo htmlspecialchars($project['name']); ?></strong>
+                                <div class="task-name-cell">
+                                    <span class="task-name-text"><?php echo htmlspecialchars($project['name']); ?></span>
+                                </div>
                             </td>
-                            <td style="color: #64748b; max-width: 300px;">
+                            <td>
                                 <?php 
                                 $desc = htmlspecialchars($project['description'] ?? '');
                                 if (!empty($desc)) {
-                                    echo strlen($desc) > 60 ? substr($desc, 0, 60) . '...' : $desc;
+                                    echo '<span class="task-project">' . (strlen($desc) > 60 ? substr($desc, 0, 60) . '...' : $desc) . '</span>';
                                 } else {
-                                    echo '<span style="color: #cbd5e1; font-style: italic;">No description</span>';
+                                    echo '<span style="color: var(--text-muted); font-style: italic;">No description</span>';
                                 }
                                 ?>
                             </td>
-                            <td>
+                            <td onclick="event.stopPropagation();">
                                 <?php 
                                 $status = htmlspecialchars($project['status']);
                                 $status_class = strtolower(str_replace(' ', '-', $status));
-                                $status_colors = [
-                                    'active' => ['bg' => '#d1fae5', 'text' => '#065f46', 'border' => '#10b981'],
-                                    'on-hold' => ['bg' => '#fef3c7', 'text' => '#92400e', 'border' => '#f59e0b'],
-                                    'completed' => ['bg' => '#dbeafe', 'text' => '#1e40af', 'border' => '#3b82f6']
-                                ];
-                                $color = $status_colors[$status_class] ?? ['bg' => '#f3f4f6', 'text' => '#374151', 'border' => '#9ca3af'];
+                                $status_badge_class = 'table-status-badge';
+                                
+                                // Map status to badge classes
+                                if ($status_class == 'active') {
+                                    $status_badge_class .= ' table-status-active';
+                                } elseif ($status_class == 'on-hold') {
+                                    $status_badge_class .= ' table-status-pending';
+                                } elseif ($status_class == 'completed') {
+                                    $status_badge_class .= ' table-status-closed';
+                                } else {
+                                    $status_badge_class .= ' table-status-closed';
+                                }
                                 ?>
-                                <span class="badge" style="display: inline-flex; align-items: center; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 500; background: <?php echo $color['bg']; ?>; color: <?php echo $color['text']; ?>; border: 1px solid <?php echo $color['border']; ?>;">
+                                <span class="<?php echo $status_badge_class; ?>">
+                                    <span class="badge-dot"></span>
                                     <?php echo $status; ?>
                                 </span>
                             </td>
-                            <td style="color: #475569;">
+                            <td>
                                 <?php 
                                 if (!empty($project['pm_name'])) {
-                                    echo htmlspecialchars($project['pm_name']);
+                                    echo '<span class="task-project">' . htmlspecialchars($project['pm_name']) . '</span>';
                                 } else {
-                                    echo '<span style="color: #cbd5e1; font-style: italic;">Unassigned</span>';
+                                    echo '<span style="color: var(--text-muted); font-style: italic;">Unassigned</span>';
                                 }
                                 ?>
                             </td>
-                            <td style="text-align: center;">
-                                <span style="display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 50%; background: #f0fdfa; color: #14b8a6; font-weight: 600; font-size: 13px; border: 2px solid #ccfbf1;">
+                            <td style="text-align: center;" onclick="event.stopPropagation();">
+                                <div class="assignee-avatar">
                                     <?php echo $project['task_count']; ?>
+                                </div>
+                            </td>
+                            <td>
+                                <span class="due-date-text">
+                                    <i class="fas fa-calendar-alt" style="margin-right: 6px; color: var(--text-muted);"></i>
+                                    <?php echo formatDate($project['created_at']); ?>
                                 </span>
                             </td>
-                            <td style="color: #64748b; font-size: 13px;">
-                                <i class="fas fa-calendar-alt" style="margin-right: 6px; color: #94a3b8;"></i>
-                                <?php echo formatDate($project['created_at']); ?>
-                            </td>
-                            <td style="text-align: center;">
+                            <td style="text-align: center;" onclick="event.stopPropagation();">
                                 <div style="display: inline-flex; gap: 6px;">
-                                    <a href="tasks?project_id=<?php echo $project['id']; ?>" class="btn btn-sm btn-primary" title="View Tasks" style="padding: 6px 10px; background: #14b8a6; color: white; border: none;  text-decoration: none; display: inline-flex; align-items: center; justify-content: center; transition: all 0.2s;">
+                                    <a href="tasks?project_id=<?php echo $project['id']; ?>" class="btn btn-sm btn-primary" title="View Tasks">
                                         <i class="fas fa-eye"></i>
                                     </a>
-                                    <a href="?edit=<?php echo $project['id']; ?>" class="btn btn-sm btn-warning" title="Edit" style="padding: 6px 10px; background: #f59e0b; color: white; border: none;  text-decoration: none; display: inline-flex; align-items: center; justify-content: center; transition: all 0.2s;">
+                                    <a href="?edit=<?php echo $project['id']; ?>" class="btn btn-sm btn-warning" title="Edit">
                                         <i class="fas fa-edit"></i>
                                     </a>
-                                    <a href="?delete=<?php echo $project['id']; ?>" class="btn btn-sm btn-danger btn-delete" title="Delete" style="padding: 6px 10px; background: #ef4444; color: white; border: none;  text-decoration: none; display: inline-flex; align-items: center; justify-content: center; transition: all 0.2s;">
+                                    <a href="?delete=<?php echo $project['id']; ?>" class="btn btn-sm btn-danger btn-delete" title="Delete">
                                         <i class="fas fa-trash"></i>
                                     </a>
                                 </div>

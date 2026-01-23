@@ -31,14 +31,37 @@ if (isset($_GET['edit'])) {
     $stmt->close();
 }
 
-// Get projects list
+// Get projects list (filtered by user assignment/creation)
 if (isSuperAdmin()) {
     $projects = $conn->query("SELECT * FROM projects ORDER BY name")->fetch_all(MYSQLI_ASSOC);
-} else {
+} else if (isOrgAdmin()) {
+    // Org Admin sees all projects in their organization
     $org_id = getOrganizationId();
     if ($org_id) {
         $stmt = $conn->prepare("SELECT * FROM projects WHERE organization_id = ? ORDER BY name");
         $stmt->bind_param("i", $org_id);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $projects = $result->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+    } else {
+        $projects = [];
+    }
+} else {
+    // Project Manager and Team Members: only projects they're assigned to, created, or manage
+    $user_id = $_SESSION['user_id'];
+    $org_id = getOrganizationId();
+    if ($org_id) {
+        $projects_query = "
+            SELECT DISTINCT p.* 
+            FROM projects p
+            LEFT JOIN project_users pu ON p.id = pu.project_id
+            WHERE (p.project_manager_id = ? OR p.created_by = ? OR pu.user_id = ?)
+            AND p.organization_id = ?
+            ORDER BY p.name
+        ";
+        $stmt = $conn->prepare($projects_query);
+        $stmt->bind_param("iiii", $user_id, $user_id, $user_id, $org_id);
         $stmt->execute();
         $result = $stmt->get_result();
         $projects = $result->fetch_all(MYSQLI_ASSOC);
@@ -102,8 +125,17 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['create_task'])) {
             // Include project_id in task_id to ensure uniqueness: PROJ-PROJECTID-TASKNUM
             $task_id_str = $project_code . '-' . $project_id . '-' . $task_num;
             
-            // Get default status_id (first status from organization's statuses)
-            $default_status = !empty($statuses) ? $statuses[0] : null;
+            // Get default status_id (use is_default_task if set, otherwise first status)
+            $default_status = null;
+            foreach ($statuses as $status) {
+                if ($status['is_default_task'] ?? 0) {
+                    $default_status = $status;
+                    break;
+                }
+            }
+            if (!$default_status && !empty($statuses)) {
+                $default_status = $statuses[0];
+            }
             $status_id = $default_status ? $default_status['id'] : null;
             $status_name = $default_status ? $default_status['name'] : 'To Do';
             

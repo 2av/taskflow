@@ -388,58 +388,6 @@ $(document).ready(function() {
         });
     }
     
-    // Handle pagination links with AJAX
-    $(document).on('click', '.pagination-btn:not(.disabled):not(.active)', function(e) {
-        e.preventDefault();
-        var page = $(this).data('page') || $(this).text();
-        var url = new URL(window.location.href);
-        url.searchParams.set('page', page);
-        
-        // Get current filter form data
-        var formData = $('#filterForm').serialize();
-        var params = new URLSearchParams(formData);
-        params.set('page', page);
-        
-        // Make AJAX request
-        $.ajax({
-            url: window.location.pathname,
-            type: 'GET',
-            data: params.toString(),
-            headers: {
-                'X-Requested-With': 'XMLHttpRequest'
-            },
-            success: function(response) {
-                if (typeof response === 'string') {
-                    response = JSON.parse(response);
-                }
-                if (response.success) {
-                    $('#tasksTableBody').html(response.html);
-                    // Update statistics
-                    if (response.stats) {
-                        var $statsBar = $('.task-stats-bar');
-                        if ($statsBar.length) {
-                            $statsBar.replaceWith(response.stats);
-                        }
-                    }
-                    if (response.pagination) {
-                        var $paginationContainer = $('#paginationContainer');
-                        if ($paginationContainer.length) {
-                            $paginationContainer.find('.pagination').remove();
-                            $paginationContainer.prepend(response.pagination);
-                            var countText = 'Showing ' + response.count + ' of ' + response.total_items + ' tasks';
-                            $paginationContainer.find('span').last().text(countText);
-                        }
-                    }
-                    // Update URL without reload
-                    window.history.pushState({}, '', url.toString());
-                    // Re-initialize delete button handlers
-                    $('.btn-delete').on('click', function(e) {
-                        if (!confirm('Are you sure you want to delete this item?')) {
-                            e.preventDefault();
-                        }
-                    });
-                }
-            }
-        });
-    });
+    // Pagination links work normally - no AJAX needed
+    // The links will navigate normally and preserve all URL parameters
 });

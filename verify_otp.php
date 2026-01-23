@@ -9,11 +9,19 @@ if (isLoggedIn()) {
 
 $error = '';
 $success = '';
-$email = $_POST['email'] ?? $_SESSION['pending_verification_email'] ?? $_GET['email'] ?? '';
+// Security: Never accept email from URL parameters - only from POST or SESSION
+$email = $_POST['email'] ?? $_SESSION['pending_verification_email'] ?? '';
 // If email is in session but not in current request, use session email
 if (!empty($_SESSION['pending_verification_email']) && empty($email)) {
     $email = $_SESSION['pending_verification_email'];
 }
+
+// Security: If no email in session or POST, redirect to registration (prevents direct URL access)
+if (empty($email) && $_SERVER['REQUEST_METHOD'] !== 'POST') {
+    header('Location: register_organization');
+    exit();
+}
+
 $otp_verified = false;
 $show_org_form = false; // Deprecated - kept for compatibility
 $org_details_submitted = false; // Track if org details were successfully submitted
@@ -350,10 +358,11 @@ if (isset($_SESSION['verified_email']) && !$org_details_submitted && false) {
 
 // Handle resend OTP
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['resend_otp'])) {
-    $email = trim($_POST['email'] ?? '');
+    // Security: Use session email first, then POST (never GET)
+    $email = trim($_POST['email'] ?? $_SESSION['pending_verification_email'] ?? '');
     
     if (empty($email)) {
-        $error = 'Please enter your email address';
+        $error = 'Email address not found. Please start the registration process again.';
     } else {
         $conn = getDBConnection();
         

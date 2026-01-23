@@ -52,6 +52,74 @@ if (!isset($page_title)) {
                     }
                 }
             });
+            
+            // Global Search Autocomplete
+            const searchInput = document.getElementById('headerSearchInput');
+            const searchResults = document.getElementById('headerSearchResults');
+            let searchTimeout = null;
+            
+            if (searchInput && searchResults) {
+                searchInput.addEventListener('input', function() {
+                    const query = this.value.trim();
+                    
+                    // Clear previous timeout
+                    if (searchTimeout) {
+                        clearTimeout(searchTimeout);
+                    }
+                    
+                    // Hide results if query is less than 3 characters
+                    if (query.length < 3) {
+                        searchResults.innerHTML = '';
+                        searchResults.classList.remove('show');
+                        return;
+                    }
+                    
+                    // Debounce search
+                    searchTimeout = setTimeout(function() {
+                        fetch('tasks?ajax_suggestions=1&search_suggestions=' + encodeURIComponent(query))
+                            .then(response => response.json())
+                            .then(data => {
+                                if (data.success && data.suggestions && data.suggestions.length > 0) {
+                                    let html = '';
+                                    const top5 = data.suggestions.slice(0, 5);
+                                    top5.forEach(function(task) {
+                                        html += '<div class="header-search-result-item" onclick="window.location.href=\'task_view?id=' + task.id + '\'">';
+                                        html += '<div class="header-search-result-id">' + (task.task_id || '—') + '</div>';
+                                        html += '<div class="header-search-result-title">' + (task.title || '') + '</div>';
+                                        html += '</div>';
+                                    });
+                                    searchResults.innerHTML = html;
+                                    searchResults.classList.add('show');
+                                } else {
+                                    searchResults.innerHTML = '<div class="header-search-result-item header-search-no-results">No tasks found</div>';
+                                    searchResults.classList.add('show');
+                                }
+                            })
+                            .catch(error => {
+                                console.error('Search error:', error);
+                                searchResults.innerHTML = '';
+                                searchResults.classList.remove('show');
+                            });
+                    }, 300);
+                });
+                
+                // Hide results when clicking outside
+                document.addEventListener('click', function(event) {
+                    if (!event.target.closest('.header-search-container')) {
+                        searchResults.classList.remove('show');
+                    }
+                });
+                
+                // Handle Enter key
+                searchInput.addEventListener('keydown', function(e) {
+                    if (e.key === 'Enter') {
+                        const query = this.value.trim();
+                        if (query.length >= 3) {
+                            window.location.href = 'tasks?search=' + encodeURIComponent(query);
+                        }
+                    }
+                });
+            }
         });
     </script>
 </head>
@@ -85,8 +153,20 @@ if (!isset($page_title)) {
                     if ($show_logo) {
                         if (!empty($org_logo)) {
                             $logo_url = getImageUrl($org_logo, 'organization');
-                            echo '<img src="' . htmlspecialchars($logo_url) . '" alt="' . htmlspecialchars($org_name ?? 'Organization') . '" class="nav-brand-logo" onerror="this.style.display=\'none\'; this.nextElementSibling.style.display=\'flex\';">';
-                            echo '<div class="nav-brand-logo-default" style="display: none;"><i class="fas fa-building"></i></div>';
+                            // Check if file exists before displaying
+                            $logo_path = $logo_url;
+                            if (strpos($logo_path, 'uploads/') === 0) {
+                                $logo_path = __DIR__ . '/../' . $logo_path;
+                            }
+                            $logo_exists = file_exists($logo_path);
+                            
+                            if ($logo_exists) {
+                                echo '<img src="' . htmlspecialchars($logo_url) . '" alt="' . htmlspecialchars($org_name ?? 'Organization') . '" class="nav-brand-logo" onerror="this.style.display=\'none\'; this.nextElementSibling.style.display=\'flex\';">';
+                                echo '<div class="nav-brand-logo-default" style="display: none;"><i class="fas fa-building"></i></div>';
+                            } else {
+                                // File doesn't exist, show default logo
+                                echo '<div class="nav-brand-logo-default"><i class="fas fa-building"></i></div>';
+                            }
                         } else {
                             // Show default company logo if no logo uploaded
                             echo '<div class="nav-brand-logo-default"><i class="fas fa-building"></i></div>';
@@ -120,6 +200,18 @@ if (!isset($page_title)) {
                 <?php if (isSuperAdmin() || isOrgAdmin()): ?>
                     <a href="users" class="nav-link" title="Users"><i class="fas fa-users nav-icon"></i><span class="nav-text">Users</span></a>
                 <?php endif; ?>
+            </div>
+            <!-- Global Search -->
+            <div class="header-search-container">
+                <div class="header-search-wrapper">
+                    <i class="fas fa-search header-search-icon"></i>
+                    <input type="text" 
+                           id="headerSearchInput" 
+                           class="header-search-input" 
+                           placeholder="Search tasks by ID or title..."
+                           autocomplete="off">
+                    <div id="headerSearchResults" class="header-search-results"></div>
+                </div>
             </div>
             <!-- Profile Circle with Dropdown -->
             <div class="relative" id="profileDropdown">

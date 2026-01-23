@@ -181,11 +181,12 @@ function timeAgo($datetime) {
 }
 
 // Build dynamic status count SQL using status_id
+// Use COUNT(DISTINCT) to avoid duplicate counts when multiple project_users exist
 $status_count_cases = [];
 foreach ($statuses as $status) {
     $status_id = $status['id'];
     $status_key = strtolower(str_replace(' ', '_', $status['name']));
-    $status_count_cases[] = "SUM(CASE WHEN t.status_id = $status_id THEN 1 ELSE 0 END) as {$status_key}_count";
+    $status_count_cases[] = "COUNT(DISTINCT CASE WHEN t.status_id = $status_id THEN t.id END) as {$status_key}_count";
 }
 $status_count_sql = implode(",\n               ", $status_count_cases);
 
@@ -207,11 +208,12 @@ if (isSuperAdmin()) {
     ";
     $projects = $conn->query($projects_query)->fetch_all(MYSQLI_ASSOC);
 } else if (isOrgAdmin()) {
-    // Organization Admin sees all projects in their organization
+    // Organization Admin sees only projects they created or are assigned to
+    $user_id = $_SESSION['user_id'];
     $org_id = getOrganizationId();
     $projects_query = "
         SELECT p.*, 
-               COUNT(t.id) as total_tasks,
+               COUNT(DISTINCT t.id) as total_tasks,
                {$status_count_sql},
                (SELECT MAX(al.created_at) 
                 FROM activity_logs al 
@@ -219,22 +221,24 @@ if (isSuperAdmin()) {
                 WHERE t2.project_id = p.id) as last_activity
         FROM projects p
         LEFT JOIN tasks t ON p.id = t.project_id
-        WHERE p.organization_id = ?
+        LEFT JOIN project_users pu ON p.id = pu.project_id
+        WHERE p.organization_id = ? 
+        AND (p.created_by = ? OR pu.user_id = ?)
         GROUP BY p.id
         ORDER BY p.name
     ";
     $stmt = $conn->prepare($projects_query);
-    $stmt->bind_param("i", $org_id);
+    $stmt->bind_param("iii", $org_id, $user_id, $user_id);
     $stmt->execute();
     $result = $stmt->get_result();
     $projects = $result->fetch_all(MYSQLI_ASSOC);
     $stmt->close();
 } else if (isProjectManager()) {
-    // PM sees assigned projects
+    // PM sees projects they manage, created, or are assigned to
     $user_id = $_SESSION['user_id'];
     $projects_query = "
-        SELECT DISTINCT p.*, 
-               COUNT(t.id) as total_tasks,
+        SELECT p.*, 
+               COUNT(DISTINCT t.id) as total_tasks,
                {$status_count_sql},
                (SELECT MAX(al.created_at) 
                 FROM activity_logs al 
@@ -249,11 +253,11 @@ if (isSuperAdmin()) {
     ";
     $projects = $conn->query($projects_query)->fetch_all(MYSQLI_ASSOC);
 } else {
-    // Team Member sees projects they're assigned to
+    // Team Member sees projects they're assigned to or created
     $user_id = $_SESSION['user_id'];
     $projects_query = "
-        SELECT DISTINCT p.*, 
-               COUNT(t.id) as total_tasks,
+        SELECT p.*, 
+               COUNT(DISTINCT t.id) as total_tasks,
                {$status_count_sql},
                (SELECT MAX(al.created_at) 
                 FROM activity_logs al 
@@ -262,7 +266,7 @@ if (isSuperAdmin()) {
         FROM projects p
         LEFT JOIN tasks t ON p.id = t.project_id
         LEFT JOIN project_users pu ON p.id = pu.project_id
-        WHERE pu.user_id = $user_id
+        WHERE p.created_by = $user_id OR pu.user_id = $user_id
         GROUP BY p.id
         ORDER BY p.name
     ";
@@ -350,9 +354,32 @@ if ($selected_project_id) {
     }
 }
 
-// Get upcoming deadlines (tasks with due dates in next 7 days)
+// Get upcoming deadlines (tasks with due dates in next 7 days) - Show only 5 on dashboard
 $upcoming_deadlines = [];
+$total_upcoming_count = 0;
 if ($selected_project_id) {
+    // First, get total count
+    $count_query = "
+        SELECT COUNT(*) as total
+        FROM tasks t
+        LEFT JOIN statuses s ON t.status_id = s.id
+        WHERE t.project_id = ? 
+        AND t.due_date IS NOT NULL 
+        AND t.due_date >= CURDATE() 
+        AND t.due_date <= DATE_ADD(CURDATE(), INTERVAL 7 DAY)
+        AND (s.name != 'Done' OR s.name IS NULL OR t.status_id IS NULL)
+    ";
+    $count_stmt = $conn->prepare($count_query);
+    if ($count_stmt) {
+        $count_stmt->bind_param("i", $selected_project_id);
+        $count_stmt->execute();
+        $count_result = $count_stmt->get_result();
+        $count_row = $count_result->fetch_assoc();
+        $total_upcoming_count = intval($count_row['total'] ?? 0);
+        $count_stmt->close();
+    }
+    
+    // Then get only 5 records for display
     $upcoming_query = "
         SELECT t.*, u.full_name as assignee_name, s.name as status_name, s.color as status_color
         FROM tasks t
@@ -364,7 +391,7 @@ if ($selected_project_id) {
         AND t.due_date <= DATE_ADD(CURDATE(), INTERVAL 7 DAY)
         AND (s.name != 'Done' OR s.name IS NULL OR t.status_id IS NULL)
         ORDER BY t.due_date ASC
-        LIMIT 10
+        LIMIT 5
     ";
     $stmt = $conn->prepare($upcoming_query);
     if ($stmt) {
@@ -1363,35 +1390,37 @@ include 'includes/header.php';
         <?php if (empty($projects)): ?>
             <!-- Empty State: No Projects -->
             <div class="premium-card empty-state mt-24">
-                <?php if (isSuperAdmin() || isOrgAdmin() || isAdmin()): ?>
-                    <!-- Admin View: Can create projects -->
-                    <i class="fas fa-folder-plus empty-state-icon"></i>
-                    <h2 class="empty-state-title">No Projects Yet</h2>
-                    <p class="empty-state-text">
-                        Get started by creating your first project. Projects help you organize and track your tasks efficiently.
-                    </p>
-                    <button type="button" onclick="openAddProjectModal()" class="btn-action">
-                        <i class="fas fa-plus"></i>
-                        <span>Add Your First Project</span>
-                    </button>
-                <?php else: ?>
-                    <!-- Non-Admin View: Request project assignment -->
-                    <i class="fas fa-folder-open empty-state-icon"></i>
-                    <h2 class="empty-state-title">No Projects Assigned</h2>
-                    <p class="empty-state-text mb-24">
-                        You don't have any projects assigned yet. Request project assignment from your administrator to get started.
-                    </p>
-                    <form method="POST" action="" class="d-inline-block">
-                        <input type="hidden" name="request_project_assignment" value="1">
-                        <button type="submit" class="btn-action">
-                            <i class="fas fa-paper-plane"></i>
-                            <span>Request Project Assignment</span>
+                <div class="empty-state-content">
+                    <?php if (isSuperAdmin() || isOrgAdmin() || isAdmin()): ?>
+                        <!-- Admin View: Can create projects -->
+                        <i class="fas fa-folder-plus empty-state-icon"></i>
+                        <h2 class="empty-state-title">No Projects Yet</h2>
+                        <p class="empty-state-text">
+                            Get started by creating your first project. Projects help you organize and track your tasks efficiently.
+                        </p>
+                        <button type="button" onclick="openAddProjectModal()" class="btn-action">
+                            <i class="fas fa-plus"></i>
+                            <span>Add Your First Project</span>
                         </button>
-                    </form>
-                    <p class="empty-state-text-small">
-                        Or contact support at <a href="mailto:support@agprimetech.com" class="link-primary">support@agprimetech.com</a>
-                    </p>
-                <?php endif; ?>
+                    <?php else: ?>
+                        <!-- Non-Admin View: Request project assignment -->
+                        <i class="fas fa-folder-open empty-state-icon"></i>
+                        <h2 class="empty-state-title">No Projects Assigned</h2>
+                        <p class="empty-state-text">
+                            You don't have any projects assigned yet. Request project assignment from your administrator to get started.
+                        </p>
+                        <form method="POST" action="" class="d-inline-block">
+                            <input type="hidden" name="request_project_assignment" value="1">
+                            <button type="submit" class="btn-action">
+                                <i class="fas fa-paper-plane"></i>
+                                <span>Request Project Assignment</span>
+                            </button>
+                        </form>
+                        <p class="empty-state-text-small">
+                            Or contact support at <a href="mailto:support@agprimetech.com" class="link-primary">support@agprimetech.com</a>
+                        </p>
+                    <?php endif; ?>
+                </div>
             </div>
         <?php else: ?>
         <?php 
@@ -1578,7 +1607,7 @@ include 'includes/header.php';
                 </script>    
             <!-- Left: Progress Bars + Bar Chart Combined -->
             <div>
-                    <h3 class="chart-title mb-16">Task Distribution</h3>
+                    <h3 class="chart-title">Task Distribution</h3>
                     <!-- Progress Bars -->
                     <div style="margin-bottom: 24px;">
                         <?php foreach ($statuses as $status): 
@@ -1611,18 +1640,19 @@ include 'includes/header.php';
                 
                
                 
-                <!-- Right: Area Line Chart - Task Trends -->
+                <!-- Right: 7 Days Trends Area Chart -->
                 <div>
                     <h3 style="font-size: 13px; font-weight: 600; color: var(--text-secondary); margin: 0 0 16px 0; text-transform: uppercase; letter-spacing: 0.5px;">Task Trends (7 Days)</h3>
-                    <div style="height: 200px; position: relative; background: var(--page-bg); border-radius: 8px; padding: 16px; border: 1px solid var(--border-color);">
+                    <div style="height: 200px; position: relative; background: var(--page-bg); border-radius: 8px; padding: 20px 16px 40px 16px; border: 1px solid var(--border-color);">
                         <?php 
-                        // Get task counts for last 7 days for selected project only
+                        // Get task counts for last 7 days
                         $chart_conn = getDBConnection();
-                        $chart_data = [];
-                        $chart_labels = [];
+                        $trends_data = [];
+                        $trends_labels = [];
+                        
                         for ($i = 6; $i >= 0; $i--) {
                             $date = date('Y-m-d', strtotime("-$i days"));
-                            $chart_labels[] = date('M d', strtotime($date));
+                            $trends_labels[] = date('M d', strtotime($date));
                             $date_start = $date . ' 00:00:00';
                             $date_end = $date . ' 23:59:59';
                             
@@ -1648,76 +1678,187 @@ include 'includes/header.php';
                             }
                             
                             $count_result = $chart_conn->query($count_query);
-                            $chart_data[] = $count_result ? $count_result->fetch_assoc()['count'] : 0;
+                            $trends_data[] = $count_result ? intval($count_result->fetch_assoc()['count']) : 0;
                         }
                         $chart_conn->close();
                         
-                        $max_value = max($chart_data) > 0 ? max($chart_data) : 1;
-                        $area_points = "M 0,160 ";
-                        $line_points = "M ";
+                        $max_value = max($trends_data) > 0 ? max($trends_data) : 1;
                         $chart_width = 100;
-                        $chart_height = 140;
+                        $chart_height = 120;
+                        $padding_top = 10;
+                        $padding_bottom = 10;
+                        $plot_height = $chart_height - $padding_top - $padding_bottom;
                         
+                        // Calculate smooth curve points using cubic bezier
+                        $points = [];
                         for ($i = 0; $i < 7; $i++) {
                             $x = ($i / 6) * $chart_width;
-                            $y = $chart_height - (($chart_data[$i] / $max_value) * ($chart_height - 20));
+                            $normalized_value = $trends_data[$i] / $max_value;
+                            $y = $padding_top + ($plot_height - ($normalized_value * $plot_height));
+                            $points[] = ['x' => $x, 'y' => $y, 'value' => $trends_data[$i], 'date' => $trends_labels[$i]];
+                        }
+                        
+                        // Build area path
+                        $area_path = "M 0," . ($padding_top + $plot_height) . " ";
+                        for ($i = 0; $i < 7; $i++) {
                             if ($i == 0) {
-                                $line_points .= "$x,$y ";
-                                $area_points .= "$x,$y ";
+                                $area_path .= "L {$points[$i]['x']},{$points[$i]['y']} ";
                             } else {
-                                $line_points .= "L $x,$y ";
-                                $area_points .= "L $x,$y ";
+                                // Use smooth curves with control points
+                                $prev_x = $points[$i-1]['x'];
+                                $prev_y = $points[$i-1]['y'];
+                                $curr_x = $points[$i]['x'];
+                                $curr_y = $points[$i]['y'];
+                                
+                                // Control point for smooth curve
+                                $cp1x = $prev_x + ($curr_x - $prev_x) * 0.5;
+                                $cp1y = $prev_y;
+                                $cp2x = $prev_x + ($curr_x - $prev_x) * 0.5;
+                                $cp2y = $curr_y;
+                                
+                                $area_path .= "C $cp1x,$cp1y $cp2x,$cp2y $curr_x,$curr_y ";
                             }
                         }
-                        $area_points .= "L $chart_width,$chart_height L 0,$chart_height Z";
+                        $area_path .= "L $chart_width," . ($padding_top + $plot_height) . " Z";
+                        
+                        // Build line path
+                        $line_path = "M ";
+                        for ($i = 0; $i < 7; $i++) {
+                            if ($i == 0) {
+                                $line_path .= "{$points[$i]['x']},{$points[$i]['y']} ";
+                            } else {
+                                $prev_x = $points[$i-1]['x'];
+                                $prev_y = $points[$i-1]['y'];
+                                $curr_x = $points[$i]['x'];
+                                $curr_y = $points[$i]['y'];
+                                
+                                $cp1x = $prev_x + ($curr_x - $prev_x) * 0.5;
+                                $cp1y = $prev_y;
+                                $cp2x = $prev_x + ($curr_x - $prev_x) * 0.5;
+                                $cp2y = $curr_y;
+                                
+                                $line_path .= "C $cp1x,$cp1y $cp2x,$cp2y $curr_x,$curr_y ";
+                            }
+                        }
                         ?>
                         <svg width="100%" height="100%" viewBox="0 0 <?php echo $chart_width + 20; ?> <?php echo $chart_height + 20; ?>" preserveAspectRatio="none" style="overflow: visible;">
                             <defs>
-                                <linearGradient id="areaGradient" x1="0%" y1="0%" x2="0%" y2="100%">
-                                    <stop offset="0%" style="stop-color:var(--blue);stop-opacity:0.25" />
-                                    <stop offset="100%" style="stop-color:var(--blue);stop-opacity:0" />
+                                <linearGradient id="trendsGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+                                    <stop offset="0%" style="stop-color:#4ade80;stop-opacity:0.4" />
+                                    <stop offset="50%" style="stop-color:#22c55e;stop-opacity:0.3" />
+                                    <stop offset="100%" style="stop-color:#16a34a;stop-opacity:0.1" />
                                 </linearGradient>
                             </defs>
-                            <path d="<?php echo $area_points; ?>" fill="url(#areaGradient)" />
-                            <path d="<?php echo $line_points; ?>" fill="none" stroke="var(--blue)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-                            <?php for ($i = 0; $i < 7; $i++): 
-                                $x = ($i / 6) * $chart_width;
-                                $y = $chart_height - (($chart_data[$i] / $max_value) * ($chart_height - 20));
+                            
+                            <!-- Grid lines -->
+                            <?php for ($i = 0; $i <= 5; $i++): 
+                                $grid_y = $padding_top + ($i / 5) * $plot_height;
                             ?>
-                                <circle cx="<?php echo $x; ?>" cy="<?php echo $y; ?>" r="3" fill="var(--blue)" stroke="white" stroke-width="2"/>
+                                <line x1="0" y1="<?php echo $grid_y; ?>" x2="<?php echo $chart_width; ?>" y2="<?php echo $grid_y; ?>" 
+                                      stroke="var(--border-color)" stroke-width="0.5" opacity="0.3"/>
                             <?php endfor; ?>
+                            
+                            <!-- Area fill -->
+                            <path d="<?php echo $area_path; ?>" fill="url(#trendsGradient)" />
+                            
+                            <!-- Line -->
+                            <path d="<?php echo $line_path; ?>" fill="none" stroke="#22c55e" stroke-width="2.5" 
+                                  stroke-linecap="round" stroke-linejoin="round"/>
+                            
+                            <!-- Data points with tooltips -->
+                            <?php foreach ($points as $index => $point): ?>
+                                <circle cx="<?php echo $point['x']; ?>" cy="<?php echo $point['y']; ?>" r="4" 
+                                        fill="#fbbf24" stroke="white" stroke-width="2"
+                                        style="cursor: pointer; transition: all 0.2s;"
+                                        onmouseover="showTrendTooltip(event, <?php echo $point['value']; ?>, '<?php echo $point['date']; ?>'); this.setAttribute('r', '5.5');"
+                                        onmouseout="hideTrendTooltip(); this.setAttribute('r', '4');"/>
+                            <?php endforeach; ?>
                         </svg>
-                        <div style="position: absolute; bottom: 0; left: 0; right: 0; display: flex; justify-content: space-between; padding: 8px 0; font-size: 10px; color: var(--text-muted);">
-                            <?php foreach ($chart_labels as $label): ?>
+                        
+                        <!-- X-axis labels -->
+                        <div style="position: absolute; bottom: 8px; left: 0; right: 0; display: flex; justify-content: space-between; padding: 0 8px; font-size: 10px; color: var(--text-muted);">
+                            <?php foreach ($trends_labels as $label): ?>
                                 <span><?php echo $label; ?></span>
                             <?php endforeach; ?>
                         </div>
+                        
+                        <!-- Y-axis labels -->
+                        <div style="position: absolute; left: 4px; top: 20px; bottom: 40px; display: flex; flex-direction: column; justify-content: space-between; font-size: 9px; color: var(--text-muted);">
+                            <?php for ($i = 5; $i >= 0; $i--): 
+                                $value = round(($i / 5) * $max_value);
+                            ?>
+                                <span><?php echo $value; ?></span>
+                            <?php endfor; ?>
+                        </div>
                     </div>
                 </div>
+                
+                <script>
+                let trendTooltip = null;
+                
+                function showTrendTooltip(event, value, date) {
+                    if (!trendTooltip) {
+                        trendTooltip = document.createElement('div');
+                        trendTooltip.id = 'trendTooltip';
+                        trendTooltip.style.cssText = 'position: fixed; background: #14b8a6; color: white; padding: 8px 12px; border-radius: 6px; font-size: 11px; pointer-events: none; z-index: 10000; display: none; box-shadow: 0 4px 12px rgba(0,0,0,0.3); white-space: nowrap; font-weight: 500;';
+                        document.body.appendChild(trendTooltip);
+                    }
+                    
+                    trendTooltip.innerHTML = '<div>' + date + '</div><div style="margin-top: 2px; font-weight: 600;">' + value + ' tasks</div>';
+                    trendTooltip.style.display = 'block';
+                    updateTrendTooltipPosition(event);
+                }
+                
+                function hideTrendTooltip() {
+                    if (trendTooltip) {
+                        trendTooltip.style.display = 'none';
+                    }
+                }
+                
+                function updateTrendTooltipPosition(event) {
+                    if (!trendTooltip) return;
+                    const rect = event.target.getBoundingClientRect();
+                    const x = rect.left + (rect.width / 2);
+                    const y = rect.top - 10;
+                    trendTooltip.style.left = (x - trendTooltip.offsetWidth / 2) + 'px';
+                    trendTooltip.style.top = (y - trendTooltip.offsetHeight - 8) + 'px';
+                }
+                </script>
             </div>
         </div>
         
         <!-- Additional Dashboard Sections -->
         <?php if ($selected_project_id): ?>
-        <div class="dashboard-additional-sections d-grid" style="grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 24px;">
+        <div class="dashboard-additional-sections d-grid" style="grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 24px; align-items: stretch;">
             <!-- Left Column: Upcoming Deadlines -->
-            <div style="display: flex; flex-direction: column; gap: 24px;">
+            <div style="display: flex; flex-direction: column;">
                 <!-- Upcoming Deadlines -->
-                <div class="premium-card">
-                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;">
-                        <h3 style="font-size: 16px; font-weight: 600; color: var(--text-primary); margin: 0; display: flex; align-items: center; gap: 8px;">
-                            <i class="fas fa-calendar-alt" style="color: var(--chart-red); font-size: 14px;"></i>
-                            <span>Upcoming Deadlines</span>
-                        </h3>
-                        <span style="font-size: 12px; color: var(--text-secondary);">Next 7 days</span>
+                <div class="premium-card" style="display: flex; flex-direction: column; height: 100%;">
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; flex-shrink: 0;">
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                            <h3 style="font-size: 16px; font-weight: 600; color: var(--text-primary); margin: 0; display: flex; align-items: center; gap: 8px;">
+                                <i class="fas fa-calendar-alt" style="color: var(--chart-red); font-size: 14px;"></i>
+                                <span>Upcoming Deadlines</span>
+                            </h3>
+                            <span style="font-size: 12px; color: var(--text-secondary);">Next 7 days</span>
+                        </div>
+                        <?php if (!empty($upcoming_deadlines) && $total_upcoming_count > 5): ?>
+                            <a href="upcoming_deadlines<?php echo $selected_project_id ? '?project_id=' . $selected_project_id : ''; ?>" 
+                               style="display: inline-flex; align-items: center; gap: 6px; color: var(--blue); text-decoration: none; font-size: 13px; font-weight: 500; transition: color 0.2s;"
+                               onmouseover="this.style.color='var(--blue-dark)';"
+                               onmouseout="this.style.color='var(--blue)';">
+                                <span>View All</span>
+                                <i class="fas fa-arrow-right" style="font-size: 11px;"></i>
+                            </a>
+                        <?php endif; ?>
                     </div>
                     <?php if (empty($upcoming_deadlines)): ?>
-                        <div style="text-align: center; padding: 32px 16px; color: var(--text-muted);">
+                        <div style="text-align: center; padding: 32px 16px; color: var(--text-muted); flex: 1; display: flex; flex-direction: column; justify-content: center;">
                             <i class="fas fa-check-circle" style="font-size: 32px; margin-bottom: 8px; opacity: 0.5;"></i>
                             <p style="font-size: 14px; margin: 0;">No upcoming deadlines</p>
                         </div>
                     <?php else: ?>
-                        <div style="display: flex; flex-direction: column; gap: 12px;">
+                        <div style="display: flex; flex-direction: column; gap: 12px; flex: 1; overflow-y: auto; padding-right: 4px;" class="deadlines-scroll-container">
                             <?php foreach ($upcoming_deadlines as $deadline): 
                                 $due_date = strtotime($deadline['due_date']);
                                 $days_left = ceil(($due_date - time()) / 86400);
@@ -1741,7 +1882,7 @@ include 'includes/header.php';
                                         </div>
                                     </div>
                                     <div style="flex: 1; min-width: 0;">
-                                        <div style="font-size: 14px; font-weight: 600; color: var(--text-primary); margin-bottom: 4px; line-height: 1.3;">
+                                        <div style="font-size: 14px; font-weight: 600; color: var(--text-primary); margin-bottom: 4px; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="<?php echo htmlspecialchars($deadline['title']); ?>">
                                             <?php echo htmlspecialchars($deadline['title']); ?>
                                         </div>
                                         <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--text-secondary);">
@@ -1767,17 +1908,17 @@ include 'includes/header.php';
             </div>
             
             <!-- Right Column: Project Completion -->
-            <div style="display: flex; flex-direction: column; gap: 24px;">
+            <div style="display: flex; flex-direction: column;">
                 <!-- Project Completion Percentage -->
-                <div class="premium-card">
-                    <div style="margin-bottom: 16px;">
+                <div class="premium-card" style="display: flex; flex-direction: column; height: 100%;">
+                    <div style="margin-bottom: 16px; flex-shrink: 0;">
                         <h3 style="font-size: 16px; font-weight: 600; color: var(--text-primary); margin: 0 0 8px 0; display: flex; align-items: center; gap: 8px;">
                             <i class="fas fa-chart-pie" style="color: var(--chart-green); font-size: 14px;"></i>
                             <span>Project Completion</span>
                         </h3>
                         <p style="font-size: 12px; color: var(--text-secondary); margin: 0;">Overall progress indicator</p>
                     </div>
-                    <div style="display: flex; flex-direction: column; align-items: center; padding: 24px;">
+                    <div style="display: flex; flex-direction: column; align-items: center; padding: 24px; flex: 1; justify-content: center;">
                         <div style="position: relative; width: 160px; height: 160px; margin-bottom: 20px;">
                             <svg width="160" height="160" viewBox="0 0 160 160" style="transform: rotate(-90deg);">
                                 <circle cx="80" cy="80" r="70" fill="none" stroke="#E5E7EB" stroke-width="12"/>
