@@ -5,6 +5,9 @@ requireActiveSubscription();
 
 $page_title = 'Task Details';
 
+// Flag to render inside popup without global header/footer
+$is_modal = isset($_GET['modal']) && $_GET['modal'] == '1';
+
 $conn = getDBConnection();
 $message = '';
 $error = '';
@@ -1263,7 +1266,27 @@ $time_logs_check_conn->close();
 
 $conn->close();
 
-include 'includes/header.php';
+if (!$is_modal) {
+    include 'includes/header.php';
+} else {
+    // Modal/iframe: output minimal document with same CSS/JS so styles reflect
+    $modalBase = rtrim(dirname($_SERVER['SCRIPT_NAME'] ?? ''), '/\\');
+    $modalBase = $modalBase ? $modalBase . '/' : '';
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Task #<?php echo htmlspecialchars($task['task_id'] ?? ''); ?> - <?php echo defined('SITE_NAME') ? SITE_NAME : 'TaskFlow'; ?></title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="<?php echo htmlspecialchars($modalBase); ?>assets/css/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+</head>
+<body>
+<?php
+}
 ?>
 
 <style>
@@ -2040,7 +2063,8 @@ include 'includes/header.php';
 
 <style>
 .task-view-page {
-    background: var(--page-bg);
+   /* background: var(--page-bg); */
+   background: #fff;
     min-height: calc(100vh - 60px);
     padding: 0;
     margin: 0;
@@ -2710,7 +2734,11 @@ body .content-wrapper:has(.task-view-page) {
 }
 </style>
 
+<?php if ($is_modal): ?>
+<div class="task-view-page" style="padding-top: 0;">
+<?php else: ?>
 <div class="task-view-page">
+<?php endif; ?>
     <!-- Breadcrumb Navigation -->
     <div class="task-breadcrumb">
         <a href="tasks">Tasks</a>
@@ -2826,6 +2854,13 @@ body .content-wrapper:has(.task-view-page) {
                 title="No changes to save">
             <i class="fas fa-save"></i>
             <span>Save</span>
+        </button>
+        <!-- Copy task link -->
+        <button type="button" id="copy-task-link-btn" onclick="copyTaskLink()" 
+                style="display: inline-flex; margin-left: 8px; padding: 6px 12px; background: var(--page-bg); color: var(--text-primary); border: 1px solid var(--border-color); font-size: 13px; font-weight: 500; cursor: pointer; align-items: center; gap: 6px; border-radius: 6px;"
+                title="Copy link to open this task">
+            <i class="fas fa-link"></i>
+            <span id="copy-link-label">Copy link</span>
         </button>
     </div>
     
@@ -3974,6 +4009,41 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 
+// Copy direct task view link to clipboard
+function copyTaskLink() {
+    const taskId = new URLSearchParams(window.location.search).get('id');
+    if (!taskId) return;
+    const u = new URL(window.location.href);
+    u.search = '?id=' + taskId;
+    const link = u.href;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(link).then(function() {
+            const btn = document.getElementById('copy-task-link-btn');
+            const label = document.getElementById('copy-link-label');
+            if (btn && label) {
+                label.textContent = 'Copied!';
+                setTimeout(function() { label.textContent = 'Copy link'; }, 2000);
+            }
+        }).catch(function() { fallbackCopy(link); });
+    } else {
+        fallbackCopy(link);
+    }
+}
+function fallbackCopy(text) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+        document.execCommand('copy');
+        var label = document.getElementById('copy-link-label');
+        if (label) { label.textContent = 'Copied!'; setTimeout(function() { label.textContent = 'Copy link'; }, 2000); }
+    } catch (e) {}
+    document.body.removeChild(ta);
+}
+
 // Mark that changes have been made
 function markChanged() {
     const saveBtn = document.getElementById('save-task-btn');
@@ -4973,4 +5043,9 @@ function escapeHtml(text) {
 }
 </script>
 
+<?php if ($is_modal): ?>
+</body>
+</html>
+<?php else: ?>
 <?php include 'includes/footer.php'; ?>
+<?php endif; ?>

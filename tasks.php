@@ -98,6 +98,12 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['create_task'])) {
             invalidateDashboardCache();
             
             $message = 'Task created successfully';
+
+            // If the task was created from the dashboard modal, return to dashboard
+            if (isset($_GET['from']) && $_GET['from'] === 'dashboard') {
+                header('Location: dashboard?project_id=' . $project_id);
+                exit();
+            }
         } else {
             $error = 'Error creating task: ' . $conn->error;
             }
@@ -110,6 +116,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_status_quick'])
     $task_id = intval($_POST['task_id']);
     $new_status_id = intval($_POST['status_id']); // Now using status_id
     $user_id = $_SESSION['user_id'];
+    $is_ajax = !empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest';
     
     // Validate status_id exists and belongs to this organization
     $org_statuses = getStatuses($organization_id);
@@ -155,14 +162,137 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_status_quick'])
                     // Invalidate dashboard cache when status is changed
                     invalidateDashboardCache();
                 }
+                if ($is_ajax) {
+                    header('Content-Type: application/json');
+                    echo json_encode([
+                        'success' => true,
+                        'message' => 'Status updated successfully',
+                        'task_id' => $task_id,
+                        'status_id' => $new_status_id,
+                        'status_name' => $new_status_name,
+                    ]);
+                    exit();
+                }
+
                 $message = 'Status updated successfully';
             } else {
+                if ($is_ajax) {
+                    header('Content-Type: application/json');
+                    echo json_encode([
+                        'success' => false,
+                        'error' => 'Error updating status: ' . $conn->error,
+                    ]);
+                    exit();
+                }
                 $error = 'Error updating status: ' . $conn->error;
                 error_log("Status update SQL error: " . $conn->error);
             }
             $stmt->close();
         } else {
+            if ($is_ajax) {
+                header('Content-Type: application/json');
+                echo json_encode([
+                    'success' => false,
+                    'error' => 'Task not found',
+                ]);
+                exit();
+            }
             $error = 'Task not found';
+        }
+    }
+
+    // If we reached here and it's an AJAX request but we didn't exit above, send generic error
+    if ($is_ajax) {
+        header('Content-Type: application/json');
+        echo json_encode([
+            'success' => false,
+            'error' => $error ?: 'Error updating status',
+        ]);
+        exit();
+    }
+}
+
+// Handle quick assignee update
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_assignee_quick'])) {
+    $task_id = intval($_POST['task_id']);
+    $new_assignee_id = isset($_POST['assignee_id']) && $_POST['assignee_id'] !== '' ? intval($_POST['assignee_id']) : null;
+    $user_id = $_SESSION['user_id'];
+    $is_ajax = !empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest';
+
+    // Get old assignee
+    $task_stmt = $conn->prepare("SELECT assignee_id FROM tasks WHERE id = ?");
+    $task_stmt->bind_param("i", $task_id);
+    $task_stmt->execute();
+    $task_res = $task_stmt->get_result();
+    $task_row = $task_res->fetch_assoc();
+    $task_stmt->close();
+
+    if (!$task_row) {
+        $error = 'Task not found';
+        if ($is_ajax) {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => false, 'error' => $error]);
+            exit();
+        }
+    } else {
+        $old_assignee_id = $task_row['assignee_id'] !== null ? intval($task_row['assignee_id']) : null;
+
+        // Helper to get user name
+        $get_name = function($id) use ($conn) {
+            if (!$id) return 'Unassigned';
+            $stmt = $conn->prepare("SELECT full_name FROM users WHERE id = ?");
+            $stmt->bind_param("i", $id);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $row = $res->fetch_assoc();
+            $stmt->close();
+            return $row['full_name'] ?? 'User';
+        };
+
+        $old_name = $get_name($old_assignee_id);
+        $new_name = $get_name($new_assignee_id);
+
+        // Update assignee
+        if ($new_assignee_id === null) {
+            $update_stmt = $conn->prepare("UPDATE tasks SET assignee_id = NULL WHERE id = ?");
+            $update_stmt->bind_param("i", $task_id);
+        } else {
+            $update_stmt = $conn->prepare("UPDATE tasks SET assignee_id = ? WHERE id = ?");
+            $update_stmt->bind_param("ii", $new_assignee_id, $task_id);
+        }
+
+        if ($update_stmt->execute()) {
+            $update_stmt->close();
+
+            // Log activity
+            if ($old_assignee_id !== $new_assignee_id) {
+                $action = "Assignee changed";
+                $log_stmt = $conn->prepare("INSERT INTO activity_logs (task_id, user_id, action, old_value, new_value) VALUES (?, ?, ?, ?, ?)");
+                $log_stmt->bind_param("iisss", $task_id, $user_id, $action, $old_name, $new_name);
+                $log_stmt->execute();
+                $log_stmt->close();
+            }
+
+            if ($is_ajax) {
+                header('Content-Type: application/json');
+                echo json_encode([
+                    'success' => true,
+                    'message' => 'Assignee updated successfully',
+                    'task_id' => $task_id,
+                    'assignee_id' => $new_assignee_id,
+                    'assignee_name' => $new_name,
+                ]);
+                exit();
+            }
+            $message = 'Assignee updated successfully';
+        } else {
+            $err = 'Error updating assignee: ' . $conn->error;
+            if ($is_ajax) {
+                header('Content-Type: application/json');
+                echo json_encode(['success' => false, 'error' => $err]);
+                exit();
+            }
+            $error = $err;
         }
     }
 }
@@ -265,13 +395,8 @@ if (isset($_GET['project_id']) && !empty($_GET['project_id'])) {
 }
 
 // Get filter values (support multiple selections)
-// Use URL project_id if present, otherwise use session project_id from dashboard, otherwise empty
-if (isset($_GET['project_id']) && !empty($_GET['project_id'])) {
-    $filter_project = is_array($_GET['project_id']) ? array_map('intval', $_GET['project_id']) : [intval($_GET['project_id'])];
-    // Store in session for persistence
-    $_SESSION['selected_project_id'] = $filter_project[0];
-} elseif (isset($_SESSION['selected_project_id']) && !empty($_SESSION['selected_project_id'])) {
-    // Use session project_id if no URL parameter (persist from dashboard click)
+// Project selection is maintained internally via session (no visible dropdown)
+if (isset($_SESSION['selected_project_id']) && !empty($_SESSION['selected_project_id'])) {
     $filter_project = [intval($_SESSION['selected_project_id'])];
 } else {
     $filter_project = [];
@@ -1387,27 +1512,37 @@ include 'includes/header.php';
 <div class="tasks-page-container">
     <!-- Tasks Overview Header -->
     <div class="tasks-overview-header">
-        <h2 class="tasks-overview-title">Tasks Overview</h2>
-        <?php if (isAdmin() || isProjectManager()): ?>
-            <button type="button" class="add-task-btn" onclick="openAddTaskModal()">
-                <i class="fas fa-plus"></i>
-                <span>Add Task</span>
+        <h2 class="tasks-overview-title">
+            Tasks Overview
+            <?php if (!empty($selected_project_name)): ?>
+                <span style="font-size: 14px; color: var(--text-secondary); font-weight: 400; margin-left: 8px;">
+                    (<?php echo htmlspecialchars($selected_project_name); ?>)
+                </span>
+            <?php endif; ?>
+        </h2>
+        <div style="display: flex; align-items: center; gap: 8px;">
+            <button type="button"
+                    id="toggleTasksFiltersBtn"
+                    class="btn-action-sm"
+                    style="background: var(--card-bg); color: var(--text-secondary); border: 1px solid var(--border-color); box-shadow: none; padding: 8px 12px;">
+                <i class="fas fa-filter"></i>
+                <span>Filters</span>
             </button>
-        <?php endif; ?>
+            <?php if (isAdmin() || isProjectManager()): ?>
+                <button type="button" class="add-task-btn" onclick="openAddTaskModal()">
+                    <i class="fas fa-plus"></i>
+                    <span class="add-task-text">Add Task</span>
+                </button>
+            <?php endif; ?>
+        </div>
     </div>
 
 <?php if ($message): ?>
-        <div class="mb-4 bg-green-50 border border-green-200 text-green-800 px-4 py-3 rounded-lg flex items-center gap-2">
-            <i class="fas fa-check-circle"></i>
-            <span><?php echo htmlspecialchars($message); ?></span>
-        </div>
+        <div class="alert alert-success"><?php echo htmlspecialchars($message); ?></div>
 <?php endif; ?>
 
 <?php if ($error): ?>
-        <div class="mb-4 bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-lg flex items-center gap-2">
-            <i class="fas fa-exclamation-circle"></i>
-            <span><?php echo htmlspecialchars($error); ?></span>
-        </div>
+        <div class="alert alert-error"><?php echo htmlspecialchars($error); ?></div>
 <?php endif; ?>
 
     <!-- Task Summary Statistics -->
@@ -1416,9 +1551,6 @@ include 'includes/header.php';
         // Build filter URLs
         function buildFilterUrl($params) {
             $url_params = [];
-            if (!empty($params['project_id'])) {
-                $url_params['project_id'] = $params['project_id'];
-            }
             if (!empty($params['status'])) {
                 $url_params['status'] = $params['status'];
             }
@@ -1432,7 +1564,6 @@ include 'includes/header.php';
         }
         
         $base_params = [
-            'project_id' => !empty($filter_project) ? $filter_project[0] : null,
             'assignee_id' => $filter_assignee,
             'search' => $search
         ];
@@ -1463,34 +1594,9 @@ include 'includes/header.php';
     </div>
 
     <!-- Search and Filter Bar -->
-    <form method="GET" action="tasks" class="tasks-filters-bar" id="tasksFilterForm">
-        <div class="search-input-wrapper">
-            <input type="text" name="search" id="searchInput" 
-                   placeholder="Search tasks..." 
-                   value="<?php echo htmlspecialchars($search); ?>"
-                   class="search-input"
-                   autocomplete="off">
-            <i class="fas fa-search search-icon"></i>
-            <?php if (!empty($search)): ?>
-                <button type="button" id="clearSearchBtn" 
-                        onclick="document.getElementById('searchInput').value=''; document.getElementById('tasksFilterForm').submit();"
-                        style="position: absolute; right: 12px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--text-muted); cursor: pointer; padding: 4px;">
-                    <i class="fas fa-times"></i>
-                </button>
-            <?php endif; ?>
-            <!-- Search Suggestions Dropdown -->
-            <div id="searchSuggestions" class="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto hidden" style="top: 100%; left: 0;">
-                <div id="suggestionsList" class="py-1"></div>
-            </div>
-        </div>
-        
+    <form method="GET" action="tasks" class="tasks-filters-bar" id="tasksFilterForm" style="display: none;">
         <?php 
         // Prepare options for custom multiselects (exclude '0' from actual values)
-        $project_options = [];
-        foreach ($projects as $proj) {
-            $project_options[$proj['id']] = $proj['name'];
-        }
-        
         // Build status options from database
         $status_options = [];
         foreach ($statuses as $status) {
@@ -1504,9 +1610,6 @@ include 'includes/header.php';
         ];
         ?>
         
-        <div style="position: relative; min-width: 140px;">
-            <?php echo renderCustomMultiselect('project_id', $project_options, $filter_project, true); ?>
-        </div>
         <div style="position: relative; min-width: 140px;">
             <?php echo renderCustomMultiselect('status', $status_options, $filter_status, false); ?>
         </div>
@@ -1530,7 +1633,6 @@ include 'includes/header.php';
                 <tr>
                     <th>Task ID / Type</th>
                     <th>Task</th>
-                    <th>Project</th>
                     <th style="text-align: center;">Status</th>
                     <th style="text-align: center;">Priority</th>
                     <th style="text-align: center;">Due Date</th>
@@ -1628,9 +1730,6 @@ include 'includes/header.php';
                                     <span class="task-name-text"><?php echo htmlspecialchars($task['title']); ?></span>
                                 </div>
                             </td>
-                            <td>
-                                <span class="task-project"><?php echo htmlspecialchars($task['project_name'] ?? '—'); ?></span>
-                            </td>
                             <td style="text-align: center;" onclick="event.stopPropagation();">
                                 <form method="POST" action="" style="display: inline-block; margin: 0;" id="statusForm_<?php echo $task['id']; ?>" onsubmit="return updateTaskStatusQuick(<?php echo $task['id']; ?>, this);">
                                     <input type="hidden" name="task_id" value="<?php echo $task['id']; ?>">
@@ -1655,20 +1754,45 @@ include 'includes/header.php';
                             <td style="text-align: center;">
                                 <span class="due-date-text"><?php echo $due_date_display; ?></span>
                             </td>
-                            <td style="text-align: center;">
-                                <?php if ($assignee_initials): ?>
-                                    <div class="assignee-avatar" title="<?php echo htmlspecialchars($task['assignee_name']); ?>">
-                                        <?php echo htmlspecialchars($assignee_initials); ?>
-                                    </div>
-                                <?php else: ?>
-                                    <span style="color: var(--text-muted); font-size: 12px;">—</span>
-                                <?php endif; ?>
+                            <td style="text-align: center;" onclick="event.stopPropagation();">
+                                <form method="POST" action="" style="display: inline-block; margin: 0;" id="assigneeForm_<?php echo $task['id']; ?>" onsubmit="return updateTaskAssigneeQuick(<?php echo $task['id']; ?>, this);">
+                                    <input type="hidden" name="task_id" value="<?php echo $task['id']; ?>">
+                                    <input type="hidden" name="update_assignee_quick" value="1">
+                                    <select name="assignee_id"
+                                            onchange="this.form.submit();"
+                                            onclick="event.stopPropagation();"
+                                            style="padding: 4px 24px 4px 8px; border: 1px solid var(--border-color); font-size: 12px; cursor: pointer; background: white; color: var(--text-primary); appearance: none; background-image: url('data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 12 12\'%3E%3Cpath fill=\'%23333333\' d=\'M6 9L1 4h10z\'/%3E%3C/svg%3E'); background-repeat: no-repeat; background-position: right 8px center; min-width: 130px;">
+                                        <option value=""><?php echo $assignee_initials ? htmlspecialchars($task['assignee_name']) : 'Unassigned'; ?></option>
+                                        <?php if (!empty($users)): ?>
+                                            <?php foreach ($users as $user): ?>
+                                                <option value="<?php echo $user['id']; ?>" <?php echo (!empty($task['assignee_id']) && $task['assignee_id'] == $user['id']) ? 'selected' : ''; ?>>
+                                                    <?php echo htmlspecialchars($user['full_name']); ?>
+                                                </option>
+                                            <?php endforeach; ?>
+                                        <?php endif; ?>
+                                    </select>
+                                </form>
                             </td>
                         </tr>
                     <?php endforeach; ?>
                 <?php endif; ?>
             </tbody>
         </table>
+    </div>
+
+    <!-- Task View Modal (full-screen overlay, covers entire page) -->
+    <div id="taskViewModal" style="display: none; position: fixed; left: 0; right: 0; top: 0; bottom: 0; z-index: 1100;">
+        <div id="taskViewBackdrop" style="position: absolute; inset: 0; background: rgba(15,23,42,0.6);" onclick="closeTaskViewModal()"></div>
+        <div style="position: relative; inset: 0; width: 100%; height: 100%;">
+            <!-- Close button overlay (top-right) -->
+            <button type="button"
+                    onclick="closeTaskViewModal()"
+                    style="position: absolute; top: 10px; right: 16px; z-index: 1110; border: none; background: rgba(15,23,42,0.7); color: #fff; cursor: pointer; padding: 6px 8px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center;">
+                <i class="fas fa-times" style="font-size: 14px;"></i>
+            </button>
+            <!-- Task content iframe fills the area so design matches task_view page -->
+            <iframe id="taskViewFrame" src="about:blank" style="width: 100%; height: 100%; border: none; background: var(--page-bg); position: relative; z-index: 1101;"></iframe>
+        </div>
     </div>
 
     <!-- Pagination -->
@@ -1854,238 +1978,37 @@ const searchSuggestions = document.getElementById('searchSuggestions');
 const suggestionsList = document.getElementById('suggestionsList');
 const clearSearchBtn = document.getElementById('clearSearchBtn');
 
-// Get current URL parameters (excluding search)
+// Simple helper to preserve existing filters (status, assignee) when needed
 function getCurrentParams() {
     const urlParams = new URLSearchParams(window.location.search);
     const params = {};
-    
-    // Preserve existing filters
-    if (urlParams.has('project_id')) {
-        params.project_id = urlParams.get('project_id');
-    }
     if (urlParams.has('status')) {
         params.status = urlParams.getAll('status');
     }
     if (urlParams.has('assignee_id')) {
         params.assignee_id = urlParams.getAll('assignee_id');
     }
-    
     return params;
 }
 
-// Build URL with search
-function buildSearchUrl(searchTerm) {
-    const params = getCurrentParams();
-    if (searchTerm && searchTerm.trim()) {
-        params.search = searchTerm.trim();
-    }
-    const queryString = new URLSearchParams();
-    Object.keys(params).forEach(key => {
-        if (Array.isArray(params[key])) {
-            params[key].forEach(val => queryString.append(key, val));
-        } else {
-            queryString.append(key, params[key]);
-        }
-    });
-    return 'tasks' + (queryString.toString() ? '?' + queryString.toString() : '');
-}
-
-// Fetch search suggestions
-function fetchSuggestions(query) {
-    if (!query || query.length < 1) {
-        hideSuggestions();
-        return;
-    }
-    
-    const params = getCurrentParams();
-    params.search_suggestions = query;
-    
-    fetch('tasks?' + new URLSearchParams(params).toString() + '&ajax_suggestions=1', {
-        headers: {
-            'X-Requested-With': 'XMLHttpRequest'
-        }
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success && data.suggestions) {
-            currentSuggestions = data.suggestions;
-            displaySuggestions(data.suggestions);
-        } else {
-            hideSuggestions();
-        }
-    })
-    .catch(error => {
-        console.error('Search error:', error);
-        hideSuggestions();
-    });
-}
-
-// Display suggestions
-function displaySuggestions(suggestions) {
-    if (!suggestions || suggestions.length === 0) {
-        hideSuggestions();
-        return;
-    }
-    
-    suggestionsList.innerHTML = '';
-    selectedSuggestionIndex = -1;
-    
-    suggestions.forEach((suggestion, index) => {
-        const item = document.createElement('div');
-        item.className = 'px-4 py-2 hover:bg-teal-50 cursor-pointer flex items-center justify-between transition-colors';
-        item.dataset.index = index;
-        
-        const leftDiv = document.createElement('div');
-        leftDiv.className = 'flex items-center gap-3';
-        
-        const icon = document.createElement('i');
-        icon.className = 'fas fa-tasks text-teal-600';
-        
-        const textDiv = document.createElement('div');
-        const taskId = document.createElement('div');
-        taskId.className = 'font-semibold text-gray-900 text-sm';
-        taskId.textContent = suggestion.task_id;
-        
-        const title = document.createElement('div');
-        title.className = 'text-xs text-gray-500 truncate';
-        title.textContent = suggestion.title;
-        title.style.maxWidth = '300px';
-        
-        textDiv.appendChild(taskId);
-        textDiv.appendChild(title);
-        
-        leftDiv.appendChild(icon);
-        leftDiv.appendChild(textDiv);
-        
-        item.appendChild(leftDiv);
-        
-        item.addEventListener('click', () => {
-            selectSuggestion(suggestion);
-        });
-        
-        item.addEventListener('mouseenter', () => {
-            selectedSuggestionIndex = index;
-            updateSuggestionHighlight();
-        });
-        
-        suggestionsList.appendChild(item);
-    });
-    
-    searchSuggestions.classList.remove('hidden');
-}
-
-// Update suggestion highlight
-function updateSuggestionHighlight() {
-    const items = suggestionsList.querySelectorAll('div[data-index]');
-    items.forEach((item, index) => {
-        if (index === selectedSuggestionIndex) {
-            item.classList.add('bg-teal-50');
-        } else {
-            item.classList.remove('bg-teal-50');
-        }
-    });
-}
-
-// Hide suggestions
-function hideSuggestions() {
-    searchSuggestions.classList.add('hidden');
-    currentSuggestions = [];
-    selectedSuggestionIndex = -1;
-}
-
-// Select a suggestion
-function selectSuggestion(suggestion) {
-    searchInput.value = suggestion.task_id;
-    hideSuggestions();
-    // Navigate to search results
-    window.location.href = buildSearchUrl(suggestion.task_id);
-}
-
-// Real-time search input handler
-if (searchInput) {
-    searchInput.addEventListener('input', function(e) {
-        const query = e.target.value.trim();
-        
-        // Clear timeout if exists
-        if (searchTimeout) {
-            clearTimeout(searchTimeout);
-        }
-        
-        // Show suggestions after 300ms delay
-        if (query.length >= 1) {
-            searchTimeout = setTimeout(() => {
-                fetchSuggestions(query);
-            }, 300);
-        } else {
-            hideSuggestions();
-            // If search is cleared and we have filters, reload without search
-            if (!query && (window.location.search.includes('project_id') || window.location.search.includes('status') || window.location.search.includes('assignee_id'))) {
-                // Don't auto-reload, just clear suggestions
-                hideSuggestions();
-            } else if (!query) {
-                // No filters and no search, go to base tasks page
-                window.location.href = 'tasks';
-            }
-        }
-    });
-
-    // Handle Enter key
-    searchInput.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter') {
-            e.preventDefault();
-            const query = e.target.value.trim();
-            if (query) {
-                hideSuggestions();
-                window.location.href = buildSearchUrl(query);
-            }
-        } else if (e.key === 'ArrowDown') {
-            e.preventDefault();
-            if (currentSuggestions.length > 0) {
-                selectedSuggestionIndex = Math.min(selectedSuggestionIndex + 1, currentSuggestions.length - 1);
-                updateSuggestionHighlight();
-            }
-        } else if (e.key === 'ArrowUp') {
-            e.preventDefault();
-            if (currentSuggestions.length > 0) {
-                selectedSuggestionIndex = Math.max(selectedSuggestionIndex - 1, -1);
-                updateSuggestionHighlight();
-            }
-        } else if (e.key === 'Escape') {
-            hideSuggestions();
-            searchInput.blur();
-        }
-        
-        // Handle Enter key on selected suggestion
-        if (e.key === 'Enter' && selectedSuggestionIndex >= 0 && currentSuggestions[selectedSuggestionIndex]) {
-            e.preventDefault();
-            selectSuggestion(currentSuggestions[selectedSuggestionIndex]);
-        }
-    });
-}
-
-// Clear search button
-if (clearSearchBtn) {
-    clearSearchBtn.addEventListener('click', function() {
-        searchInput.value = '';
-        hideSuggestions();
-        window.location.href = buildSearchUrl('');
-    });
-}
-
-// Hide suggestions when clicking outside
-document.addEventListener('click', function(e) {
-    if (searchInput && searchSuggestions && !searchInput.contains(e.target) && !searchSuggestions.contains(e.target)) {
-        hideSuggestions();
-    }
-});
-
 // Handle row click - navigate to task view unless clicking on interactive elements
 document.addEventListener('DOMContentLoaded', function() {
-    // Add click handlers to all task rows
+    // Toggle filters visibility
+    const toggleFiltersBtn = document.getElementById('toggleTasksFiltersBtn');
+    const filtersForm = document.getElementById('tasksFilterForm');
+    if (toggleFiltersBtn && filtersForm) {
+        toggleFiltersBtn.addEventListener('click', function () {
+            const isHidden = filtersForm.style.display === 'none' || filtersForm.style.display === '';
+            filtersForm.style.display = isHidden ? 'flex' : 'none';
+            this.querySelector('i').className = isHidden ? 'fas fa-filter' : 'fas fa-filter';
+        });
+    }
+
+    // Add click handlers to all task rows (open full-screen popup instead of redirect)
     const taskRows = document.querySelectorAll('.task-row');
     taskRows.forEach(function(row) {
         row.addEventListener('click', function(event) {
-            // Don't navigate if clicking on checkbox, select, button, or form elements
+            // Don't open popup if clicking on checkbox, select, button, or form elements
             const target = event.target;
             const tagName = target.tagName;
             
@@ -2117,12 +2040,35 @@ document.addEventListener('DOMContentLoaded', function() {
             // Get task ID from data attribute
             const taskId = row.getAttribute('data-task-id');
             if (taskId) {
-                // Navigate to task view
-                window.location.href = 'task_view?id=' + taskId;
+                openTaskViewModal(taskId);
             }
         });
     });
 });
+
+// Open full-screen task view modal
+function openTaskViewModal(taskId) {
+    const modal = document.getElementById('taskViewModal');
+    const frame = document.getElementById('taskViewFrame');
+    if (!modal || !frame) return;
+
+    const url = 'task_view?id=' + encodeURIComponent(taskId) + '&modal=1';
+    frame.src = url;
+
+    modal.style.display = 'block';
+    document.body.style.overflow = 'hidden';
+}
+
+// Close full-screen task view modal
+function closeTaskViewModal() {
+    const modal = document.getElementById('taskViewModal');
+    const frame = document.getElementById('taskViewFrame');
+    if (!modal || !frame) return;
+
+    modal.style.display = 'none';
+    frame.src = 'about:blank';
+    document.body.style.overflow = '';
+}
 
 // Quick status update function
 function updateTaskStatusQuick(taskId, form) {
@@ -2134,7 +2080,7 @@ function updateTaskStatusQuick(taskId, form) {
         // Create a FormData object
         const formData = new FormData(form);
         
-        // Submit via fetch to avoid page reload
+        // Submit via fetch (AJAX) without page reload
         fetch('tasks', {
             method: 'POST',
             body: formData,
@@ -2142,20 +2088,75 @@ function updateTaskStatusQuick(taskId, form) {
                 'X-Requested-With': 'XMLHttpRequest'
             }
         })
-        .then(response => {
-            if (response.ok) {
-                // Reload the page to show updated status
-                window.location.reload();
+        .then(response => response.json())
+        .then(data => {
+            if (data && data.success) {
+                if (typeof showToast === 'function') {
+                    showToast(data.message || 'Status updated successfully', 'success');
+                }
             } else {
-                alert('Error updating status');
+                const msg = (data && data.error) ? data.error : 'Error updating status';
+                if (typeof showToast === 'function') {
+                    showToast(msg, 'error');
+                } else {
+                    alert(msg);
+                }
             }
         })
         .catch(error => {
             console.error('Error:', error);
-            alert('Error updating status');
+            if (typeof showToast === 'function') {
+                showToast('Error updating status', 'error');
+            } else {
+                alert('Error updating status');
+            }
         });
     }
     return false; // Prevent default form submission
+}
+
+// Quick assignee update function
+function updateTaskAssigneeQuick(taskId, form) {
+    if (!form) {
+        form = document.getElementById('assigneeForm_' + taskId);
+    }
+
+    if (form) {
+        const formData = new FormData(form);
+
+        fetch('tasks', {
+            method: 'POST',
+            body: formData,
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data && data.success) {
+                if (typeof showToast === 'function') {
+                    showToast(data.message || 'Assignee updated successfully', 'success');
+                }
+            } else {
+                const msg = (data && data.error) ? data.error : 'Error updating assignee';
+                if (typeof showToast === 'function') {
+                    showToast(msg, 'error');
+                } else {
+                    alert(msg);
+                }
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            if (typeof showToast === 'function') {
+                showToast('Error updating assignee', 'error');
+            } else {
+                alert('Error updating assignee');
+            }
+        });
+    }
+
+    return false;
 }
     </script>
 

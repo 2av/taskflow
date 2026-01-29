@@ -2297,13 +2297,37 @@ table tbody tr:empty {
 }
 
 @media (max-width: 1024px) {
+    .nav-container {
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+    
+    .nav-brand {
+        flex: 1 1 100%;
+    }
+    
     .nav-menu {
         gap: 12px;
+        flex: 1 1 100%;
+        justify-content: flex-start;
+        flex-wrap: wrap;
     }
     
     .nav-link {
         padding: 8px 12px;
         font-size: 13px;
+    }
+    
+    .header-search-container {
+        order: 3;
+        flex: 1 1 100%;
+        justify-content: flex-start;
+        margin-right: 0;
+    }
+    
+    #profileDropdown {
+        order: 4;
+        margin-left: auto;
     }
 }
 
@@ -2311,15 +2335,20 @@ table tbody tr:empty {
     .nav-container {
         flex-wrap: nowrap;
         padding: 12px 15px;
+        align-items: center;
+        gap: 8px;
     }
     
     .nav-brand {
-        flex: 1;
+        flex: 0 0 auto;
     }
     
     .nav-brand a {
-        font-size: 18px;
+        font-size: 16px;
         margin-right: 0;
+        display: flex;
+        align-items: center;
+        gap: 8px;
     }
     
     .nav-brand-logo,
@@ -2330,21 +2359,17 @@ table tbody tr:empty {
     }
     
     .nav-brand-text {
-        font-size: 16px;
+        font-size: 14px;
+        white-space: nowrap;
     }
     
     .nav-toggle {
         display: none;
     }
     
-    /* Hide top navigation menu on mobile */
+    /* Hide top navigation menu links on mobile (use bottom nav instead) */
     .nav-menu {
         display: none !important;
-    }
-    
-    /* Hide profile dropdown button on mobile (use bottom nav instead) */
-    .profile-circle-btn {
-        display: none;
     }
     
     /* Show mobile bottom navigation */
@@ -3185,16 +3210,16 @@ table tbody tr:empty {
 .tasks-summary-stats {
     display: flex;
     align-items: center;
-    gap: 16px;
+    gap: 12px;
     flex-wrap: wrap;
-    margin-bottom: 24px;
+    margin-bottom: 12px;
 }
 
 .stat-badge {
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    padding: 8px 16px;
+    padding: 6px 12px;
     font-size: 14px;
     font-weight: 500;
     color: var(--text-primary);
@@ -3257,8 +3282,8 @@ table tbody tr:empty {
 .tasks-filters-bar {
     display: flex;
     align-items: center;
-    gap: 12px;
-    margin-bottom: 20px;
+    gap: 10px;
+    margin-bottom: 16px;
     flex-wrap: wrap;
 }
 
@@ -3595,19 +3620,27 @@ table tbody tr:empty {
     
     .tasks-overview-header,
     .projects-header {
-        flex-direction: column;
+        flex-direction: row;
         align-items: flex-start;
         gap: 12px;
+    }
+    
+    /* Keep action buttons (Filters / Add Task) aligned to the right on mobile */
+    .tasks-overview-header > div:last-child {
+        align-self: flex-end;
     }
     
     .tasks-summary-stats {
         flex-wrap: wrap;
         gap: 8px;
+        justify-content: flex-start;
     }
     
     .stat-badge {
         font-size: 12px;
-        padding: 6px 12px;
+        padding: 4px 10px;
+        flex: 0 1 calc(50% - 8px);
+        justify-content: space-between;
     }
     
     .tasks-table-container {

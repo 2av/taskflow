@@ -15,6 +15,7 @@ $user_id = $_SESSION['user_id'];
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_status'])) {
     $task_id = intval($_POST['task_id']);
     $new_status = $_POST['status'];
+    $is_ajax = !empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest';
     
     // Verify task is assigned to current user
     $check_task = $conn->query("SELECT * FROM tasks WHERE id = $task_id AND assignee_id = $user_id")->fetch_assoc();
@@ -32,11 +33,37 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_status'])) {
             $stmt2->bind_param("iisss", $task_id, $user_id, $action, $old_status, $new_status);
             $stmt2->execute();
             
+            if ($is_ajax) {
+                header('Content-Type: application/json');
+                echo json_encode([
+                    'success' => true,
+                    'message' => 'Status updated successfully',
+                    'task_id' => $task_id,
+                    'status' => $new_status,
+                ]);
+                exit();
+            }
             $message = 'Status updated successfully';
         } else {
+            if ($is_ajax) {
+                header('Content-Type: application/json');
+                echo json_encode([
+                    'success' => false,
+                    'error' => 'Error updating status',
+                ]);
+                exit();
+            }
             $error = 'Error updating status';
         }
     } else {
+        if ($is_ajax) {
+            header('Content-Type: application/json');
+            echo json_encode([
+                'success' => false,
+                'error' => 'Task not found or not assigned to you',
+            ]);
+            exit();
+        }
         $error = 'Task not found or not assigned to you';
     }
 }
@@ -288,17 +315,11 @@ include 'includes/header.php';
     </div>
 
     <?php if ($message): ?>
-        <div class="mb-4 bg-green-50 border border-green-200 text-green-800 px-4 py-3 rounded-lg flex items-center gap-2">
-            <i class="fas fa-check-circle"></i>
-            <span><?php echo htmlspecialchars($message); ?></span>
-        </div>
+        <div class="alert alert-success"><?php echo htmlspecialchars($message); ?></div>
     <?php endif; ?>
 
     <?php if ($error): ?>
-        <div class="mb-4 bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-lg flex items-center gap-2">
-            <i class="fas fa-exclamation-circle"></i>
-            <span><?php echo htmlspecialchars($error); ?></span>
-        </div>
+        <div class="alert alert-error"><?php echo htmlspecialchars($error); ?></div>
     <?php endif; ?>
 
     <!-- Task Status Filters -->

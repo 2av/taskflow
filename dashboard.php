@@ -200,6 +200,23 @@ if (isSuperAdmin()) {
         SELECT p.*, 
                COUNT(t.id) as total_tasks,
                {$status_count_sql},
+               COUNT(DISTINCT CASE 
+                   WHEN t.due_date IS NOT NULL 
+                        AND t.due_date < CURDATE()
+                        AND (
+                            t.status_id IS NULL
+                            OR NOT EXISTS (
+                                SELECT 1 FROM statuses s2 
+                                WHERE s2.id = t.status_id 
+                                  AND (
+                                      LOWER(s2.name) LIKE '%done%' 
+                                      OR LOWER(s2.name) LIKE '%closed%' 
+                                      OR LOWER(s2.name) LIKE '%complete%'
+                                  )
+                            )
+                        )
+                   THEN t.id 
+               END) AS overdue_count,
                (SELECT MAX(al.created_at) 
                 FROM activity_logs al 
                 JOIN tasks t2 ON al.task_id = t2.id 
@@ -218,6 +235,23 @@ if (isSuperAdmin()) {
         SELECT p.*, 
                COUNT(DISTINCT t.id) as total_tasks,
                {$status_count_sql},
+               COUNT(DISTINCT CASE 
+                   WHEN t.due_date IS NOT NULL 
+                        AND t.due_date < CURDATE()
+                        AND (
+                            t.status_id IS NULL
+                            OR NOT EXISTS (
+                                SELECT 1 FROM statuses s2 
+                                WHERE s2.id = t.status_id 
+                                  AND (
+                                      LOWER(s2.name) LIKE '%done%' 
+                                      OR LOWER(s2.name) LIKE '%closed%' 
+                                      OR LOWER(s2.name) LIKE '%complete%'
+                                  )
+                            )
+                        )
+                   THEN t.id 
+               END) AS overdue_count,
                (SELECT MAX(al.created_at) 
                 FROM activity_logs al 
                 JOIN tasks t2 ON al.task_id = t2.id 
@@ -243,6 +277,23 @@ if (isSuperAdmin()) {
         SELECT p.*, 
                COUNT(DISTINCT t.id) as total_tasks,
                {$status_count_sql},
+               COUNT(DISTINCT CASE 
+                   WHEN t.due_date IS NOT NULL 
+                        AND t.due_date < CURDATE()
+                        AND (
+                            t.status_id IS NULL
+                            OR NOT EXISTS (
+                                SELECT 1 FROM statuses s2 
+                                WHERE s2.id = t.status_id 
+                                  AND (
+                                      LOWER(s2.name) LIKE '%done%' 
+                                      OR LOWER(s2.name) LIKE '%closed%' 
+                                      OR LOWER(s2.name) LIKE '%complete%'
+                                  )
+                            )
+                        )
+                   THEN t.id 
+               END) AS overdue_count,
                (SELECT MAX(al.created_at) 
                 FROM activity_logs al 
                 JOIN tasks t2 ON al.task_id = t2.id 
@@ -262,6 +313,23 @@ if (isSuperAdmin()) {
         SELECT p.*, 
                COUNT(DISTINCT t.id) as total_tasks,
                {$status_count_sql},
+               COUNT(DISTINCT CASE 
+                   WHEN t.due_date IS NOT NULL 
+                        AND t.due_date < CURDATE()
+                        AND (
+                            t.status_id IS NULL
+                            OR NOT EXISTS (
+                                SELECT 1 FROM statuses s2 
+                                WHERE s2.id = t.status_id 
+                                  AND (
+                                      LOWER(s2.name) LIKE '%done%' 
+                                      OR LOWER(s2.name) LIKE '%closed%' 
+                                      OR LOWER(s2.name) LIKE '%complete%'
+                                  )
+                            )
+                        )
+                   THEN t.id 
+               END) AS overdue_count,
                (SELECT MAX(al.created_at) 
                 FROM activity_logs al 
                 JOIN tasks t2 ON al.task_id = t2.id 
@@ -404,7 +472,6 @@ if ($selected_project_id) {
         LEFT JOIN statuses s ON t.status_id = s.id
         WHERE t.project_id = ? 
         AND t.due_date IS NOT NULL 
-        AND t.due_date >= CURDATE() 
         AND t.due_date <= DATE_ADD(CURDATE(), INTERVAL 7 DAY)
         AND (s.name != 'Done' OR s.name IS NULL OR t.status_id IS NULL)
     ";
@@ -426,7 +493,6 @@ if ($selected_project_id) {
         LEFT JOIN statuses s ON t.status_id = s.id
         WHERE t.project_id = ? 
         AND t.due_date IS NOT NULL 
-        AND t.due_date >= CURDATE() 
         AND t.due_date <= DATE_ADD(CURDATE(), INTERVAL 7 DAY)
         AND (s.name != 'Done' OR s.name IS NULL OR t.status_id IS NULL)
         ORDER BY t.due_date ASC
@@ -1376,9 +1442,17 @@ include 'includes/header.php';
     
     <!-- Left Sidebar -->
     <div class="dashboard-sidebar" id="dashboardSidebar">
-        <div class="sidebar-header">
-            <h2 class="sidebar-title">Projects</h2>
-            <p class="sidebar-subtitle"><?php echo count($projects); ?> total</p>
+        <div class="sidebar-header" style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+            <div>
+                <h2 class="sidebar-title">Projects</h2>
+                <p class="sidebar-subtitle"><?php echo count($projects); ?> total</p>
+            </div>
+            <?php if (!empty($projects)): ?>
+            <label style="font-size: 11px; color: var(--text-secondary); display: inline-flex; align-items: center; gap: 4px; cursor: pointer;">
+                <input type="checkbox" id="hideCompletedProjectsCheckbox" style="width: 14px; height: 14px; cursor: pointer;">
+                <span>Hide 100%</span>
+            </label>
+            <?php endif; ?>
         </div>
         
         <div class="projects-list">
@@ -1391,6 +1465,7 @@ include 'includes/header.php';
                     <?php 
                     $is_active = $selected_project_id == $project['id'];
                     $total_tasks = intval($project['total_tasks']);
+                    $overdue_count = intval($project['overdue_count'] ?? 0);
                     
                     // Calculate completion percentage for this project
                     $project_completion = 0;
@@ -1413,7 +1488,9 @@ include 'includes/header.php';
                     // Determine dot color based on project status
                     $status_lower = strtolower($project['status'] ?? '');
                     $dot_color = 'var(--chart-green)'; // default green
-                    if (strpos($status_lower, 'pending') !== false || strpos($status_lower, 'pend') !== false) {
+                    if ($overdue_count > 0) {
+                        $dot_color = 'var(--chart-red)';
+                    } elseif (strpos($status_lower, 'pending') !== false || strpos($status_lower, 'pend') !== false) {
                         $dot_color = 'var(--chart-yellow)';
                     } elseif (strpos($status_lower, 'closed') !== false || strpos($status_lower, 'completed') !== false) {
                         $dot_color = 'var(--chart-gray)';
@@ -1421,13 +1498,24 @@ include 'includes/header.php';
                     ?>
                     <a href="dashboard?project_id=<?php echo $project['id']; ?>" 
                        class="project-item <?php echo $is_active ? 'active' : ''; ?>"
+                       data-completion="<?php echo $project_completion; ?>"
                        onclick="sessionStorage.setItem('selectedProjectId', <?php echo $project['id']; ?>);">
                         <div class="project-item-left">
                             <div class="project-item-icon" style="background: <?php echo $dot_color; ?>;"></div>
                             <span class="project-item-name"><?php echo htmlspecialchars($project['name']); ?></span>
                         </div>
-                        <div style="display: flex; flex-direction: row; align-items: flex-end; gap: 2px;">
-                            <span class="project-item-count">(<?php echo $total_tasks; ?>)</span>
+                        <div style="display: flex; flex-direction: row; align-items: flex-end; gap: 4px;">
+                            <span class="project-item-count" style="<?php echo $overdue_count > 0 ? 'border-color: var(--chart-red); color: var(--chart-red);' : ''; ?>">
+                                <?php if ($overdue_count > 0): ?>
+                                    (
+                                    <span style="color: var(--chart-red); font-weight: 600;">
+                                        <?php echo $overdue_count; ?>
+                                    </span>
+                                    / <?php echo $total_tasks; ?>)
+                                <?php else: ?>
+                                    (<?php echo $total_tasks; ?>)
+                                <?php endif; ?>
+                            </span>
                             <span style="font-size: 11px; font-weight: 500; color: var(--text-secondary);"><?php echo $project_completion; ?>%</span>
                         </div>
                     </a>
@@ -1444,8 +1532,21 @@ include 'includes/header.php';
             <select id="mobileProjectSelect" onchange="changeProjectMobile(this.value)" class="mobile-project-select">
                 <option value="">Select a project...</option>
                 <?php foreach ($projects as $project): ?>
-                    <option value="<?php echo $project['id']; ?>" <?php echo ($selected_project_id == $project['id']) ? 'selected' : ''; ?>>
-                        <?php echo htmlspecialchars($project['name']); ?> (<?php echo intval($project['total_tasks']); ?> tasks)
+                    <?php 
+                    $mobile_overdue = intval($project['overdue_count'] ?? 0);
+                    $mobile_total = intval($project['total_tasks'] ?? 0);
+                    ?>
+                    <option 
+                        value="<?php echo $project['id']; ?>" 
+                        <?php echo ($selected_project_id == $project['id']) ? 'selected' : ''; ?>
+                        <?php echo $mobile_overdue > 0 ? 'style="color: #ef4444; font-weight: 500;"' : ''; ?>
+                    >
+                        <?php echo htmlspecialchars($project['name']); ?>
+                        <?php if ($mobile_overdue > 0): ?>
+                            (<?php echo $mobile_overdue; ?>/<?php echo $mobile_total; ?>)
+                        <?php else: ?>
+                            (<?php echo $mobile_total; ?>)
+                        <?php endif; ?>
                     </option>
                 <?php endforeach; ?>
             </select>
@@ -1905,7 +2006,7 @@ include 'includes/header.php';
                                 <i class="fas fa-calendar-alt" style="color: var(--chart-red); font-size: 14px;"></i>
                                 <span>Upcoming Deadlines</span>
                             </h3>
-                            <span style="font-size: 12px; color: var(--text-secondary);">Next 7 days</span>
+                            <span style="font-size: 12px; color: var(--text-secondary);">Overdue &amp; next 7 days</span>
                         </div>
                         <?php if (!empty($upcoming_deadlines) && $total_upcoming_count > 5): ?>
                             <a href="upcoming_deadlines<?php echo $selected_project_id ? '?project_id=' . $selected_project_id : ''; ?>" 
@@ -2180,7 +2281,7 @@ include 'includes/header.php';
             <h2 style="margin: 0; font-size: 20px; font-weight: 600; color: var(--text-primary);">Add New Task<?php if (!empty($add_task_project_name)): ?> (<?php echo htmlspecialchars($add_task_project_name); ?>)<?php endif; ?></h2>
             <button class="close" onclick="closeAddTaskModal()" style="background: none; border: none; font-size: 24px; cursor: pointer; color: var(--text-muted); padding: 0; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;">&times;</button>
         </div>
-        <form method="POST" action="tasks" id="addTaskForm" onsubmit="return handleAddTaskFormSubmit(event)">
+        <form method="POST" action="tasks?from=dashboard" id="addTaskForm" onsubmit="return handleAddTaskFormSubmit(event)">
             <input type="hidden" name="create_task" value="1">
             <div class="modal-body" style="padding: 24px;">
                 <div style="margin-bottom: 20px;">
@@ -2495,6 +2596,36 @@ function changeProjectMobile(projectId) {
         window.location.href = 'dashboard';
     }
 }
+
+// Sidebar: hide 100% complete projects toggle
+(function() {
+    const hideCompletedCheckbox = document.getElementById('hideCompletedProjectsCheckbox');
+    if (!hideCompletedCheckbox) return;
+
+    // Restore preference from localStorage
+    const stored = localStorage.getItem('dashboardHideCompletedProjects');
+    if (stored === '1') {
+        hideCompletedCheckbox.checked = true;
+    }
+
+    function applyHideCompleted() {
+        const hide = hideCompletedCheckbox.checked;
+        const items = document.querySelectorAll('.projects-list .project-item');
+        items.forEach(item => {
+            const completion = parseFloat(item.getAttribute('data-completion') || '0');
+            if (hide && completion >= 100) {
+                item.style.display = 'none';
+            } else {
+                item.style.display = '';
+            }
+        });
+        localStorage.setItem('dashboardHideCompletedProjects', hide ? '1' : '0');
+    }
+
+    hideCompletedCheckbox.addEventListener('change', applyHideCompleted);
+    // Apply on load
+    applyHideCompleted();
+})();
 </script>
 
 <?php 

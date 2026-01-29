@@ -189,9 +189,6 @@ if (!isset($page_title)) {
             </div>
             <div class="nav-menu" id="navMenu">
                 <a href="dashboard" class="nav-link" title="Dashboard"><i class="fas fa-home nav-icon"></i><span class="nav-text">Dashboard</span></a>
-                <?php if (isSuperAdmin() || isOrgAdmin() || isProjectManager()): ?>
-                    <a href="projects" class="nav-link" title="Projects"><i class="fas fa-folder nav-icon"></i><span class="nav-text">Projects</span></a>
-                <?php endif; ?>
                 <a href="tasks" class="nav-link" title="Tasks"><i class="fas fa-tasks nav-icon"></i><span class="nav-text">Tasks</span></a>
                 <a href="calendar" class="nav-link" title="Calendar"><i class="fas fa-calendar-alt nav-icon"></i><span class="nav-text">Calendar</span></a>
                 <?php if (isSuperAdmin() || isOrgAdmin() || isProjectManager()): ?>
@@ -302,7 +299,7 @@ if (!isset($page_title)) {
                         </div>
                     </div>
                     <div class="profile-dropdown-divider"></div>
-                    <div class="profile-dropdown-menu">
+            <div class="profile-dropdown-menu">
                         <a href="edit_profile" class="profile-dropdown-item">
                             <i class="fas fa-user-edit"></i>
                             <span>Edit Profile</span>
@@ -311,6 +308,18 @@ if (!isset($page_title)) {
                             <a href="organizations" class="profile-dropdown-item">
                                 <i class="fas fa-building"></i>
                                 <span>Organizations</span>
+                            </a>
+                        <?php endif; ?>
+                        <?php if ((isSuperAdmin() || isOrgAdmin()) && !empty($_SESSION['organization_id'])): ?>
+                            <a href="users" class="profile-dropdown-item">
+                                <i class="fas fa-users"></i>
+                                <span>Users</span>
+                            </a>
+                        <?php endif; ?>
+                        <?php if (isSuperAdmin() || isOrgAdmin() || isProjectManager()): ?>
+                            <a href="projects" class="profile-dropdown-item">
+                                <i class="fas fa-folder"></i>
+                                <span>Projects</span>
                             </a>
                         <?php endif; ?>
                         <?php if (isOrgAdmin() && !empty($_SESSION['organization_id'])): ?>
@@ -348,12 +357,6 @@ if (!isset($page_title)) {
             <i class="fas fa-home"></i>
             <span>Dashboard</span>
         </a>
-        <?php if (isSuperAdmin() || isOrgAdmin() || isProjectManager()): ?>
-            <a href="projects" class="mobile-nav-link" title="Projects">
-                <i class="fas fa-folder"></i>
-                <span>Projects</span>
-            </a>
-        <?php endif; ?>
         <a href="tasks" class="mobile-nav-link" title="Tasks">
             <i class="fas fa-tasks"></i>
             <span>Tasks</span>
@@ -399,6 +402,18 @@ if (!isset($page_title)) {
                 <a href="organizations" class="mobile-profile-item">
                     <i class="fas fa-building"></i>
                     <span>Organizations</span>
+                </a>
+            <?php endif; ?>
+            <?php if ((isSuperAdmin() || isOrgAdmin()) && !empty($_SESSION['organization_id'])): ?>
+                <a href="users" class="mobile-profile-item">
+                    <i class="fas fa-users"></i>
+                    <span>Users</span>
+                </a>
+            <?php endif; ?>
+            <?php if (isSuperAdmin() || isOrgAdmin() || isProjectManager()): ?>
+                <a href="projects" class="mobile-profile-item">
+                    <i class="fas fa-folder"></i>
+                    <span>Projects</span>
                 </a>
             <?php endif; ?>
             <?php if (isOrgAdmin() && !empty($_SESSION['organization_id'])): ?>

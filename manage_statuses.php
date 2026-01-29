@@ -28,6 +28,50 @@ if ($check_columns->num_rows == 0) {
     $conn->query("ALTER TABLE statuses ADD COLUMN is_default_task TINYINT(1) DEFAULT 0 AFTER is_default_filter");
 }
 
+// Normalize display_order values (remove zeros, duplicates, and gaps)
+// This ensures that the up/down swap controls behave predictably.
+try {
+    $org_condition = $organization_id ? "= ?" : "IS NULL";
+    $normalize_stmt = $conn->prepare("SELECT id, display_order FROM statuses WHERE organization_id $org_condition ORDER BY display_order ASC, id ASC");
+    if ($organization_id) {
+        $normalize_stmt->bind_param("i", $organization_id);
+    }
+    $normalize_stmt->execute();
+    $normalize_result = $normalize_stmt->get_result();
+    $statuses_for_normalization = [];
+    while ($row = $normalize_result->fetch_assoc()) {
+        $statuses_for_normalization[] = $row;
+    }
+    $normalize_stmt->close();
+
+    if (!empty($statuses_for_normalization)) {
+        $current_order = 1;
+        $updates = [];
+
+        foreach ($statuses_for_normalization as $row) {
+            $existing_order = isset($row['display_order']) ? (int)$row['display_order'] : 0;
+            if ($existing_order !== $current_order) {
+                $updates[] = [
+                    'id' => (int)$row['id'],
+                    'display_order' => $current_order,
+                ];
+            }
+            $current_order++;
+        }
+
+        if (!empty($updates)) {
+            $update_stmt = $conn->prepare("UPDATE statuses SET display_order = ? WHERE id = ?");
+            foreach ($updates as $update) {
+                $update_stmt->bind_param("ii", $update['display_order'], $update['id']);
+                $update_stmt->execute();
+            }
+            $update_stmt->close();
+        }
+    }
+} catch (Exception $e) {
+    // If normalization fails, we silently continue to avoid breaking the page.
+}
+
 // Handle swap order
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['swap_order'])) {
     $is_ajax = !empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest';
