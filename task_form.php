@@ -97,6 +97,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['create_task'])) {
     $priority = $_POST['priority'];
     $assignee_id = !empty($_POST['assignee_id']) ? intval($_POST['assignee_id']) : null;
     $due_date = !empty($_POST['due_date']) ? $_POST['due_date'] : null;
+    $sprint_id = !empty($_POST['sprint_id']) ? intval($_POST['sprint_id']) : null;
     $created_by = $_SESSION['user_id'];
     
     if (empty($title) || empty($project_id)) {
@@ -139,8 +140,14 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['create_task'])) {
             $status_id = $default_status ? $default_status['id'] : null;
             $status_name = $default_status ? $default_status['name'] : 'To Do';
             
-            $stmt = $conn->prepare("INSERT INTO tasks (task_id, project_id, title, description, type, priority, status_id, status, assignee_id, due_date, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-            $stmt->bind_param("sissssissi", $task_id_str, $project_id, $title, $description, $type, $priority, $status_id, $status_name, $assignee_id, $due_date, $created_by);
+            $chk_sprint = $conn->query("SHOW COLUMNS FROM tasks LIKE 'sprint_id'");
+            if ($chk_sprint && $chk_sprint->num_rows > 0) {
+                $stmt = $conn->prepare("INSERT INTO tasks (task_id, project_id, sprint_id, title, description, type, priority, status_id, status, assignee_id, due_date, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                $stmt->bind_param("siissssissi", $task_id_str, $project_id, $sprint_id, $title, $description, $type, $priority, $status_id, $status_name, $assignee_id, $due_date, $created_by);
+            } else {
+                $stmt = $conn->prepare("INSERT INTO tasks (task_id, project_id, title, description, type, priority, status_id, status, assignee_id, due_date, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                $stmt->bind_param("sissssissi", $task_id_str, $project_id, $title, $description, $type, $priority, $status_id, $status_name, $assignee_id, $due_date, $created_by);
+            }
             
             if ($stmt->execute()) {
                 $task_insert_id = $conn->insert_id;
@@ -173,6 +180,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_task'])) {
     $status_id = intval($_POST['status_id']); // Now using status_id
     $assignee_id = !empty($_POST['assignee_id']) ? intval($_POST['assignee_id']) : null;
     $due_date = !empty($_POST['due_date']) ? $_POST['due_date'] : null;
+    $sprint_id = isset($_POST['sprint_id']) && $_POST['sprint_id'] !== '' ? intval($_POST['sprint_id']) : null;
     
     // Get status name for backward compatibility
     $status_name_query = $conn->prepare("SELECT name FROM statuses WHERE id = ?");
@@ -185,8 +193,14 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_task'])) {
     // Get old values for logging
     $old_task = $conn->query("SELECT * FROM tasks WHERE id = $task_id")->fetch_assoc();
     
-    $stmt = $conn->prepare("UPDATE tasks SET title=?, description=?, type=?, priority=?, status_id=?, status=?, assignee_id=?, due_date=? WHERE id=?");
-    $stmt->bind_param("ssssissi", $title, $description, $type, $priority, $status_id, $status_name, $assignee_id, $due_date, $task_id);
+    $chk_sprint = $conn->query("SHOW COLUMNS FROM tasks LIKE 'sprint_id'");
+    if ($chk_sprint && $chk_sprint->num_rows > 0) {
+        $stmt = $conn->prepare("UPDATE tasks SET title=?, description=?, type=?, priority=?, status_id=?, status=?, assignee_id=?, due_date=?, sprint_id=? WHERE id=?");
+        $stmt->bind_param("ssssissii", $title, $description, $type, $priority, $status_id, $status_name, $assignee_id, $due_date, $sprint_id, $task_id);
+    } else {
+        $stmt = $conn->prepare("UPDATE tasks SET title=?, description=?, type=?, priority=?, status_id=?, status=?, assignee_id=?, due_date=? WHERE id=?");
+        $stmt->bind_param("ssssissi", $title, $description, $type, $priority, $status_id, $status_name, $assignee_id, $due_date, $task_id);
+    }
     
     if ($stmt->execute()) {
         // Log changes
@@ -241,6 +255,21 @@ if ($edit_task) {
         if ($project['id'] == $selected_project_id) {
             $locked_project_name = $project['name'];
             break;
+        }
+    }
+}
+
+// Sprints for selected project (create/edit)
+$form_sprints = [];
+if ($selected_project_id) {
+    $chk_sprint_col = $conn->query("SHOW COLUMNS FROM tasks LIKE 'sprint_id'");
+    if ($chk_sprint_col && $chk_sprint_col->num_rows > 0) {
+        $stmt_s = $conn->prepare("SELECT id, name FROM sprints WHERE project_id = ? ORDER BY start_date DESC, name");
+        if ($stmt_s) {
+            $stmt_s->bind_param("i", $selected_project_id);
+            $stmt_s->execute();
+            $form_sprints = $stmt_s->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt_s->close();
         }
     }
 }
@@ -536,6 +565,18 @@ include 'includes/header.php';
                            value="<?php echo $edit_task && $edit_task['due_date'] ? date('Y-m-d', strtotime($edit_task['due_date'])) : ''; ?>">
                 </div>
             </div>
+            
+            <?php if (!empty($form_sprints)): ?>
+            <div class="form-group">
+                <label for="sprint_id">Sprint</label>
+                <select id="sprint_id" name="sprint_id">
+                    <option value="">No sprint (backlog)</option>
+                    <?php foreach ($form_sprints as $spr): ?>
+                        <option value="<?php echo (int)$spr['id']; ?>" <?php echo ($edit_task && isset($edit_task['sprint_id']) && $edit_task['sprint_id'] == $spr['id']) ? 'selected' : ''; ?>><?php echo htmlspecialchars($spr['name']); ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <?php endif; ?>
             
             <!-- Form Actions -->
             <div class="form-actions">

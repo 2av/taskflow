@@ -21,6 +21,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['create_task'])) {
     $priority = $_POST['priority'] ?? 'Medium';
     $assignee_id = !empty($_POST['assignee_id']) ? intval($_POST['assignee_id']) : null;
     $due_date = !empty($_POST['due_date']) ? $_POST['due_date'] : null;
+    $sprint_id = !empty($_POST['sprint_id']) ? intval($_POST['sprint_id']) : null;
     $created_by = $_SESSION['user_id'];
     
     $desc_plain = trim(strip_tags($description));
@@ -65,24 +66,40 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['create_task'])) {
         $status_id = $default_status ? $default_status['id'] : null;
         $status_name = $default_status ? $default_status['name'] : 'To Do';
         
-        // Handle NULL values properly for assignee_id and due_date
-        // For mysqli, we need to use a different approach when values can be NULL
-        if ($assignee_id === null && $due_date === null) {
-            // 9 parameters: task_id(s), project_id(i), title(s), description(s), type(s), priority(s), status_id(i), status_name(s), created_by(i)
-            $stmt = $conn->prepare("INSERT INTO tasks (task_id, project_id, title, description, type, priority, status_id, status, assignee_id, due_date, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)");
-            $stmt->bind_param("sissssisi", $task_id, $project_id, $title, $description, $type, $priority, $status_id, $status_name, $created_by);
-        } elseif ($assignee_id === null) {
-            // 10 parameters: task_id(s), project_id(i), title(s), description(s), type(s), priority(s), status_id(i), status_name(s), due_date(s), created_by(i)
-            $stmt = $conn->prepare("INSERT INTO tasks (task_id, project_id, title, description, type, priority, status_id, status, assignee_id, due_date, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)");
-            $stmt->bind_param("sissssissi", $task_id, $project_id, $title, $description, $type, $priority, $status_id, $status_name, $due_date, $created_by);
-        } elseif ($due_date === null) {
-            // 10 parameters: task_id(s), project_id(i), title(s), description(s), type(s), priority(s), status_id(i), status_name(s), assignee_id(i), created_by(i)
-            $stmt = $conn->prepare("INSERT INTO tasks (task_id, project_id, title, description, type, priority, status_id, status, assignee_id, due_date, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)");
-            $stmt->bind_param("sissssissi", $task_id, $project_id, $title, $description, $type, $priority, $status_id, $status_name, $assignee_id, $created_by);
+        // Handle NULL values properly for assignee_id, due_date, sprint_id
+        $has_sprint = false;
+        $chk = $conn->query("SHOW COLUMNS FROM tasks LIKE 'sprint_id'");
+        if ($chk && $chk->num_rows > 0) {
+            $has_sprint = true;
+        }
+        if ($has_sprint) {
+            if ($assignee_id === null && $due_date === null) {
+                $stmt = $conn->prepare("INSERT INTO tasks (task_id, project_id, sprint_id, title, description, type, priority, status_id, status, assignee_id, due_date, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)");
+                $stmt->bind_param("siissssisi", $task_id, $project_id, $sprint_id, $title, $description, $type, $priority, $status_id, $status_name, $created_by);
+            } elseif ($assignee_id === null) {
+                $stmt = $conn->prepare("INSERT INTO tasks (task_id, project_id, sprint_id, title, description, type, priority, status_id, status, assignee_id, due_date, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)");
+                $stmt->bind_param("siissssissi", $task_id, $project_id, $sprint_id, $title, $description, $type, $priority, $status_id, $status_name, $due_date, $created_by);
+            } elseif ($due_date === null) {
+                $stmt = $conn->prepare("INSERT INTO tasks (task_id, project_id, sprint_id, title, description, type, priority, status_id, status, assignee_id, due_date, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)");
+                $stmt->bind_param("siissssissi", $task_id, $project_id, $sprint_id, $title, $description, $type, $priority, $status_id, $status_name, $assignee_id, $created_by);
+            } else {
+                $stmt = $conn->prepare("INSERT INTO tasks (task_id, project_id, sprint_id, title, description, type, priority, status_id, status, assignee_id, due_date, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                $stmt->bind_param("siissssissii", $task_id, $project_id, $sprint_id, $title, $description, $type, $priority, $status_id, $status_name, $assignee_id, $due_date, $created_by);
+            }
         } else {
-            // 11 parameters: task_id(s), project_id(i), title(s), description(s), type(s), priority(s), status_id(i), status_name(s), assignee_id(i), due_date(s), created_by(i)
-            $stmt = $conn->prepare("INSERT INTO tasks (task_id, project_id, title, description, type, priority, status_id, status, assignee_id, due_date, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-            $stmt->bind_param("sissssissii", $task_id, $project_id, $title, $description, $type, $priority, $status_id, $status_name, $assignee_id, $due_date, $created_by);
+            if ($assignee_id === null && $due_date === null) {
+                $stmt = $conn->prepare("INSERT INTO tasks (task_id, project_id, title, description, type, priority, status_id, status, assignee_id, due_date, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)");
+                $stmt->bind_param("sissssisi", $task_id, $project_id, $title, $description, $type, $priority, $status_id, $status_name, $created_by);
+            } elseif ($assignee_id === null) {
+                $stmt = $conn->prepare("INSERT INTO tasks (task_id, project_id, title, description, type, priority, status_id, status, assignee_id, due_date, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)");
+                $stmt->bind_param("sissssissi", $task_id, $project_id, $title, $description, $type, $priority, $status_id, $status_name, $due_date, $created_by);
+            } elseif ($due_date === null) {
+                $stmt = $conn->prepare("INSERT INTO tasks (task_id, project_id, title, description, type, priority, status_id, status, assignee_id, due_date, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)");
+                $stmt->bind_param("sissssissi", $task_id, $project_id, $title, $description, $type, $priority, $status_id, $status_name, $assignee_id, $created_by);
+            } else {
+                $stmt = $conn->prepare("INSERT INTO tasks (task_id, project_id, title, description, type, priority, status_id, status, assignee_id, due_date, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                $stmt->bind_param("sissssissii", $task_id, $project_id, $title, $description, $type, $priority, $status_id, $status_name, $assignee_id, $due_date, $created_by);
+            }
         }
         
         if ($stmt->execute()) {
@@ -297,6 +314,88 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_assignee_quick'
     }
 }
 
+// Handle quick sprint update
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_sprint_quick'])) {
+    $task_id = intval($_POST['task_id']);
+    $new_sprint_id = isset($_POST['sprint_id']) && $_POST['sprint_id'] !== '' ? intval($_POST['sprint_id']) : null;
+    $user_id = $_SESSION['user_id'];
+    $is_ajax = !empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest';
+
+    $chk_sprint_col = $conn->query("SHOW COLUMNS FROM tasks LIKE 'sprint_id'");
+    if (!$chk_sprint_col || $chk_sprint_col->num_rows == 0) {
+        if ($is_ajax) {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => false, 'error' => 'Sprint not available']);
+            exit();
+        }
+    } else {
+        $task_stmt = $conn->prepare("SELECT project_id, sprint_id FROM tasks WHERE id = ?");
+        $task_stmt->bind_param("i", $task_id);
+        $task_stmt->execute();
+        $task_res = $task_stmt->get_result();
+        $task_row = $task_res->fetch_assoc();
+        $task_stmt->close();
+
+        if (!$task_row) {
+            if ($is_ajax) {
+                header('Content-Type: application/json');
+                echo json_encode(['success' => false, 'error' => 'Task not found']);
+                exit();
+            }
+        } else {
+            $project_id = (int)$task_row['project_id'];
+            if ($new_sprint_id !== null) {
+                $sprint_check = $conn->prepare("SELECT id, name FROM sprints WHERE id = ? AND project_id = ?");
+                $sprint_check->bind_param("ii", $new_sprint_id, $project_id);
+                $sprint_check->execute();
+                $sprint_row = $sprint_check->get_result()->fetch_assoc();
+                $sprint_check->close();
+                if (!$sprint_row) {
+                    if ($is_ajax) {
+                        header('Content-Type: application/json');
+                        echo json_encode(['success' => false, 'error' => 'Invalid sprint']);
+                        exit();
+                    }
+                }
+                $new_sprint_name = $sprint_row['name'];
+            } else {
+                $new_sprint_name = 'Backlog';
+            }
+
+            if ($new_sprint_id === null) {
+                $update_stmt = $conn->prepare("UPDATE tasks SET sprint_id = NULL WHERE id = ?");
+                $update_stmt->bind_param("i", $task_id);
+            } else {
+                $update_stmt = $conn->prepare("UPDATE tasks SET sprint_id = ? WHERE id = ?");
+                $update_stmt->bind_param("ii", $new_sprint_id, $task_id);
+            }
+
+            if ($update_stmt->execute()) {
+                $update_stmt->close();
+                if ($is_ajax) {
+                    header('Content-Type: application/json');
+                    echo json_encode([
+                        'success' => true,
+                        'message' => 'Sprint updated',
+                        'task_id' => $task_id,
+                        'sprint_id' => $new_sprint_id,
+                        'sprint_name' => $new_sprint_name,
+                    ]);
+                    exit();
+                }
+                $message = 'Sprint updated successfully';
+            } else {
+                if ($is_ajax) {
+                    header('Content-Type: application/json');
+                    echo json_encode(['success' => false, 'error' => $conn->error]);
+                    exit();
+                }
+                $error = 'Error updating sprint';
+            }
+        }
+    }
+}
+
 // Handle task update
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_task'])) {
     $task_id = intval($_POST['task_id']);
@@ -307,6 +406,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_task'])) {
     $status_id = intval($_POST['status_id']); // Now using status_id
     $assignee_id = !empty($_POST['assignee_id']) ? intval($_POST['assignee_id']) : null;
     $due_date = !empty($_POST['due_date']) ? $_POST['due_date'] : null;
+    $sprint_id = isset($_POST['sprint_id']) && $_POST['sprint_id'] !== '' ? intval($_POST['sprint_id']) : null;
     
     // Get status name for backward compatibility
     $status_name_query = $conn->prepare("SELECT name FROM statuses WHERE id = ?");
@@ -319,8 +419,14 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_task'])) {
     // Get old values for logging
     $old_task = $conn->query("SELECT * FROM tasks WHERE id = $task_id")->fetch_assoc();
     
-    $stmt = $conn->prepare("UPDATE tasks SET title=?, description=?, type=?, priority=?, status_id=?, status=?, assignee_id=?, due_date=? WHERE id=?");
-    $stmt->bind_param("ssssissi", $title, $description, $type, $priority, $status_id, $status_name, $assignee_id, $due_date, $task_id);
+    $chk_sprint = $conn->query("SHOW COLUMNS FROM tasks LIKE 'sprint_id'");
+    if ($chk_sprint && $chk_sprint->num_rows > 0) {
+        $stmt = $conn->prepare("UPDATE tasks SET title=?, description=?, type=?, priority=?, status_id=?, status=?, assignee_id=?, due_date=?, sprint_id=? WHERE id=?");
+        $stmt->bind_param("ssssissii", $title, $description, $type, $priority, $status_id, $status_name, $assignee_id, $due_date, $sprint_id, $task_id);
+    } else {
+        $stmt = $conn->prepare("UPDATE tasks SET title=?, description=?, type=?, priority=?, status_id=?, status=?, assignee_id=?, due_date=? WHERE id=?");
+        $stmt->bind_param("ssssissi", $title, $description, $type, $priority, $status_id, $status_name, $assignee_id, $due_date, $task_id);
+    }
     
     if ($stmt->execute()) {
         // Log changes
@@ -438,6 +544,16 @@ if (empty($filter_status)) {
 $filter_priority = isset($_GET['priority']) ? (is_array($_GET['priority']) ? $_GET['priority'] : [$_GET['priority']]) : [];
 $filter_priority = array_filter($filter_priority); // Remove empty values
 
+// Sprint filter (sprint_id in URL: show only tasks in that sprint; "backlog" = no sprint)
+$filter_sprint_id = null;
+if (isset($_GET['sprint_id']) && $_GET['sprint_id'] !== '') {
+    if ($_GET['sprint_id'] === 'backlog' || $_GET['sprint_id'] === '0') {
+        $filter_sprint_id = 'backlog'; // NULL sprint
+    } else {
+        $filter_sprint_id = intval($_GET['sprint_id']);
+    }
+}
+
 // Get assignee filter from URL
 $filter_assignee = [];
 if (isset($_GET['assignee_id']) && !empty($_GET['assignee_id'])) {
@@ -519,6 +635,16 @@ if (!empty($search)) {
     $query_types .= 'ss';
 }
 
+if ($filter_sprint_id !== null) {
+    if ($filter_sprint_id === 'backlog') {
+        $where_conditions[] = "(t.sprint_id IS NULL OR t.sprint_id = 0)";
+    } else {
+        $where_conditions[] = "t.sprint_id = ?";
+        $query_params[] = $filter_sprint_id;
+        $query_types .= 'i';
+    }
+}
+
 // Role-based filtering
 if (isSuperAdmin()) {
     // Super Admin sees all tasks - no additional filter needed
@@ -581,16 +707,27 @@ if (!empty($query_params)) {
 
 $total_pages = ceil($total_items / $items_per_page);
 
+// Check if tasks has sprint_id for JOIN
+$tasks_has_sprint = false;
+$chk_sprint_col = $conn->query("SHOW COLUMNS FROM tasks LIKE 'sprint_id'");
+if ($chk_sprint_col && $chk_sprint_col->num_rows > 0) {
+    $tasks_has_sprint = true;
+}
+$sprint_join = $tasks_has_sprint ? " LEFT JOIN sprints sp ON t.sprint_id = sp.id " : "";
+$sprint_select = $tasks_has_sprint ? ", sp.name as sprint_name " : "";
+
 // Get tasks with pagination
 $query = "
     SELECT t.*, t.task_id, t.type, p.name as project_name, u.full_name as assignee_name, u2.full_name as creator_name,
            COALESCE(s.name, t.status, 'To Do') as status,
            t.status_id
+           $sprint_select
     FROM tasks t
     LEFT JOIN projects p ON t.project_id = p.id
     LEFT JOIN statuses s ON t.status_id = s.id
     LEFT JOIN users u ON t.assignee_id = u.id
     LEFT JOIN users u2 ON t.created_by = u2.id
+    $sprint_join
     $where_clause
     ORDER BY t.created_at DESC
     LIMIT ? OFFSET ?
@@ -748,6 +885,35 @@ if (isSuperAdmin()) {
     $result = $stmt->get_result();
     $users = $result->fetch_all(MYSQLI_ASSOC);
     $stmt->close();
+}
+
+// Sprints for Add Task modal (project = selected or first)
+$add_task_sprints = [];
+if ($tasks_has_sprint && !empty($projects)) {
+    $add_task_pid = !empty($filter_project) ? (int)$filter_project[0] : (int)$projects[0]['id'];
+    $stmt_sprints = $conn->prepare("SELECT id, name FROM sprints WHERE project_id = ? ORDER BY start_date DESC, name");
+    if ($stmt_sprints) {
+        $stmt_sprints->bind_param("i", $add_task_pid);
+        $stmt_sprints->execute();
+        $add_task_sprints = $stmt_sprints->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt_sprints->close();
+    }
+}
+
+// Sprints by project for table dropdown (each task's project -> list of sprints)
+$sprints_by_project = [];
+if ($tasks_has_sprint && !empty($tasks)) {
+    $project_ids = array_unique(array_column($tasks, 'project_id'));
+    foreach ($project_ids as $pid) {
+        $pid = (int)$pid;
+        $stmt_sp = $conn->prepare("SELECT id, name FROM sprints WHERE project_id = ? ORDER BY start_date DESC, name");
+        if ($stmt_sp) {
+            $stmt_sp->bind_param("i", $pid);
+            $stmt_sp->execute();
+            $sprints_by_project[$pid] = $stmt_sp->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt_sp->close();
+        }
+    }
 }
 
 // Get assignee statistics (users who have tasks assigned in current project/org)
@@ -1633,6 +1799,7 @@ include 'includes/header.php';
                 <tr>
                     <th>Task ID / Type</th>
                     <th>Task</th>
+                    <?php if ($tasks_has_sprint): ?><th style="text-align: center;">Sprint</th><?php endif; ?>
                     <th style="text-align: center;">Status</th>
                     <th style="text-align: center;">Priority</th>
                     <th style="text-align: center;">Due Date</th>
@@ -1641,11 +1808,11 @@ include 'includes/header.php';
             </thead>
             <tbody id="tasksTableBody">
                 <?php 
-                // Debug: Check if tasks array exists and has data
+                $tasks_colspan = $tasks_has_sprint ? 8 : 7;
                 if (!isset($tasks) || empty($tasks)): 
                 ?>
                     <tr>
-                        <td colspan="7" style="text-align: center; padding: 48px 16px; color: var(--text-muted);">
+                        <td colspan="<?php echo $tasks_colspan; ?>" style="text-align: center; padding: 48px 16px; color: var(--text-muted);">
                             <i class="fas fa-tasks" style="font-size: 48px; opacity: 0.3; margin-bottom: 12px; display: block;"></i>
                             <p style="margin: 0; font-size: 14px;">No tasks found</p>
                             <?php if (!empty($filter_project)): ?>
@@ -1730,6 +1897,34 @@ include 'includes/header.php';
                                     <span class="task-name-text"><?php echo htmlspecialchars($task['title']); ?></span>
                                 </div>
                             </td>
+                            <?php if ($tasks_has_sprint): ?>
+                            <td style="text-align: center;" onclick="event.stopPropagation();">
+                                <?php
+                                $task_project_id = (int)$task['project_id'];
+                                $task_sprints = $sprints_by_project[$task_project_id] ?? [];
+                                ?>
+                                <?php if (!empty($task_sprints)): ?>
+                                    <form method="POST" action="" style="display: inline-block; margin: 0;" id="sprintForm_<?php echo $task['id']; ?>" onsubmit="return updateTaskSprintQuick(<?php echo $task['id']; ?>, this);">
+                                        <input type="hidden" name="task_id" value="<?php echo $task['id']; ?>">
+                                        <input type="hidden" name="update_sprint_quick" value="1">
+                                        <select name="sprint_id"
+                                                onchange="this.form.submit();"
+                                                style="padding: 4px 24px 4px 8px; border: 1px solid var(--border-color); font-size: 12px; cursor: pointer; background: white; color: var(--text-primary); appearance: none; background-image: url('data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 12 12\'%3E%3Cpath fill=\'%23333333\' d=\'M6 9L1 4h10z\'/%3E%3C/svg%3E'); background-repeat: no-repeat; background-position: right 8px center; min-width: 120px;">
+                                            <option value="">Backlog</option>
+                                            <?php foreach ($task_sprints as $spr): ?>
+                                                <option value="<?php echo (int)$spr['id']; ?>" <?php echo (isset($task['sprint_id']) && (int)$task['sprint_id'] === (int)$spr['id']) ? 'selected' : ''; ?>><?php echo htmlspecialchars($spr['name']); ?></option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </form>
+                                <?php else: ?>
+                                    <?php if (!empty($task['sprint_name'])): ?>
+                                        <a href="sprints?project_id=<?php echo (int)$task['project_id']; ?>&sprint_id=<?php echo (int)$task['sprint_id']; ?>#backlog" class="table-status-badge table-status-active" style="text-decoration: none;"><?php echo htmlspecialchars($task['sprint_name']); ?></a>
+                                    <?php else: ?>
+                                        <span style="color: var(--text-muted);">—</span>
+                                    <?php endif; ?>
+                                <?php endif; ?>
+                            </td>
+                            <?php endif; ?>
                             <td style="text-align: center;" onclick="event.stopPropagation();">
                                 <form method="POST" action="" style="display: inline-block; margin: 0;" id="statusForm_<?php echo $task['id']; ?>" onsubmit="return updateTaskStatusQuick(<?php echo $task['id']; ?>, this);">
                                     <input type="hidden" name="task_id" value="<?php echo $task['id']; ?>">
@@ -1843,6 +2038,17 @@ include 'includes/header.php';
                 <input type="hidden" name="project_id" value="<?php echo $add_task_project_id; ?>">
                 <input type="hidden" name="type" value="Task">
                 <input type="hidden" name="priority" value="Medium">
+                <?php if ($tasks_has_sprint && !empty($add_task_sprints)): ?>
+                <div style="margin-bottom: 20px;">
+                    <label style="display: block; margin-bottom: 8px; font-weight: 500; color: var(--text-primary); font-size: 14px;">Sprint</label>
+                    <select name="sprint_id" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); font-size: 14px;">
+                        <option value="">No sprint (backlog)</option>
+                        <?php foreach ($add_task_sprints as $spr): ?>
+                            <option value="<?php echo (int)$spr['id']; ?>"><?php echo htmlspecialchars($spr['name']); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <?php endif; ?>
             </div>
             <div class="modal-footer" style="padding: 16px 24px; border-top: 1px solid var(--border-color); display: flex; justify-content: flex-end; gap: 12px;">
                 <button type="button" onclick="closeAddTaskModal()" 
@@ -2152,6 +2358,50 @@ function updateTaskAssigneeQuick(taskId, form) {
                 showToast('Error updating assignee', 'error');
             } else {
                 alert('Error updating assignee');
+            }
+        });
+    }
+
+    return false;
+}
+
+// Quick sprint update function
+function updateTaskSprintQuick(taskId, form) {
+    if (!form) {
+        form = document.getElementById('sprintForm_' + taskId);
+    }
+
+    if (form) {
+        const formData = new FormData(form);
+
+        fetch('tasks', {
+            method: 'POST',
+            body: formData,
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data && data.success) {
+                if (typeof showToast === 'function') {
+                    showToast(data.message || 'Sprint updated', 'success');
+                }
+            } else {
+                const msg = (data && data.error) ? data.error : 'Error updating sprint';
+                if (typeof showToast === 'function') {
+                    showToast(msg, 'error');
+                } else {
+                    alert(msg);
+                }
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            if (typeof showToast === 'function') {
+                showToast('Error updating sprint', 'error');
+            } else {
+                alert('Error updating sprint');
             }
         });
     }

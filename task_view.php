@@ -137,15 +137,25 @@ if (isset($_GET['get_timelog'])) {
 // Check if in description edit mode
 $edit_description_mode = isset($_GET['edit_description']) && $_GET['edit_description'] == '1';
 
-// Get task details
+// Get task details (include sprint name if sprint_id column and sprints table exist)
+$has_sprint = false;
+$chk_sprint = $conn->query("SHOW COLUMNS FROM tasks LIKE 'sprint_id'");
+if ($chk_sprint && $chk_sprint->num_rows > 0) {
+    $tbl = $conn->query("SHOW TABLES LIKE 'sprints'");
+    $has_sprint = $tbl && $tbl->num_rows > 0;
+}
+$sprint_join = $has_sprint ? " LEFT JOIN sprints sp ON t.sprint_id = sp.id " : "";
+$sprint_select = $has_sprint ? ", sp.name as sprint_name " : "";
 $task = $conn->query("
     SELECT t.*, p.name as project_name, u.full_name as assignee_name, u2.full_name as creator_name,
            s.name as status_name, s.color as status_color
+           $sprint_select
     FROM tasks t
     LEFT JOIN projects p ON t.project_id = p.id
     LEFT JOIN users u ON t.assignee_id = u.id
     LEFT JOIN users u2 ON t.created_by = u2.id
     LEFT JOIN statuses s ON t.status_id = s.id
+    $sprint_join
     WHERE t.id = $task_id
 ")->fetch_assoc();
 
@@ -175,6 +185,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_task'])) {
     $new_status_id = intval($_POST['status_id'] ?? $task['status_id'] ?? 0);
     $new_assignee_id = !empty($_POST['assignee_id']) ? intval($_POST['assignee_id']) : null;
     $new_due_date = !empty($_POST['due_date']) ? trim($_POST['due_date']) : null;
+    $new_sprint_id = isset($_POST['sprint_id']) && $_POST['sprint_id'] !== '' ? intval($_POST['sprint_id']) : null;
     $user_id = $_SESSION['user_id'];
     
     // Validate
@@ -227,6 +238,12 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_task'])) {
         }
         
         if ($stmt->execute()) {
+            if ($has_sprint) {
+                $stmt_sprint = $conn->prepare("UPDATE tasks SET sprint_id = ? WHERE id = ?");
+                $stmt_sprint->bind_param("ii", $new_sprint_id, $task_id);
+                $stmt_sprint->execute();
+                $stmt_sprint->close();
+            }
             // Log changes
             if ($old_task['title'] != $new_title) {
                 $action = "Title changed";
@@ -1263,6 +1280,18 @@ if ($time_logs_query) {
     }
 }
 $time_logs_check_conn->close();
+
+// Sprints for this task's project (for Sprint dropdown in details)
+$task_sprints = [];
+if ($has_sprint && !empty($task['project_id'])) {
+    $stmt_spr = $conn->prepare("SELECT id, name FROM sprints WHERE project_id = ? ORDER BY start_date DESC, name");
+    if ($stmt_spr) {
+        $stmt_spr->bind_param("i", $task['project_id']);
+        $stmt_spr->execute();
+        $task_sprints = $stmt_spr->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt_spr->close();
+    }
+}
 
 $conn->close();
 
@@ -3479,6 +3508,31 @@ body .content-wrapper:has(.task-view-page) {
                             </span>
                         <?php endif; ?>
                     </div>
+                    
+                    <?php if ($has_sprint): ?>
+                    <!-- Sprint -->
+                    <div class="detail-item" style="display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border-color);">
+                        <label style="font-weight: 600; color: var(--text-primary); font-size: 13px; margin: 0; white-space: nowrap; min-width: 100px;">
+                            <i class="fas fa-running" style="color: #14b8a6; margin-right: 6px;"></i>Sprint
+                        </label>
+                        <?php if ((isAdmin() || isProjectManager()) && !empty($task_sprints)): ?>
+                            <select name="sprint_id" id="task-sprint" onchange="markChanged()"
+                                    style="flex: 1; padding: 6px 10px; border: 1px solid var(--border-color); font-size: 13px; background: var(--card-bg); color: var(--text-primary);">
+                                <option value="">Backlog</option>
+                                <?php foreach ($task_sprints as $spr): ?>
+                                    <option value="<?php echo (int)$spr['id']; ?>" <?php echo (isset($task['sprint_id']) && $task['sprint_id'] == $spr['id']) ? 'selected' : ''; ?>><?php echo htmlspecialchars($spr['name']); ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        <?php else: ?>
+                            <?php if (!empty($task['sprint_name'])): ?>
+                                <a href="sprints?project_id=<?php echo (int)$task['project_id']; ?>&sprint_id=<?php echo (int)$task['sprint_id']; ?>#backlog" style="color: var(--blue); font-size: 13px; text-decoration: none;"><?php echo htmlspecialchars($task['sprint_name']); ?></a>
+                            <?php else: ?>
+                                <span style="color: var(--text-muted); font-size: 13px;">Backlog</span>
+                            <?php endif; ?>
+                            <input type="hidden" name="sprint_id" value="<?php echo isset($task['sprint_id']) && $task['sprint_id'] ? (int)$task['sprint_id'] : ''; ?>">
+                        <?php endif; ?>
+                    </div>
+                    <?php endif; ?>
                     
                     <!-- Assignee -->
                     <div class="detail-item" style="display: flex; align-items: center; gap: 12px; padding: 12px 0;">

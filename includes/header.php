@@ -190,6 +190,9 @@ if (!isset($page_title)) {
             <div class="nav-menu" id="navMenu">
                 <a href="dashboard" class="nav-link" title="Dashboard"><i class="fas fa-home nav-icon"></i><span class="nav-text">Dashboard</span></a>
                 <a href="tasks" class="nav-link" title="Tasks"><i class="fas fa-tasks nav-icon"></i><span class="nav-text">Tasks</span></a>
+                <?php if (isSuperAdmin() || isOrgAdmin() || isProjectManager()): ?>
+                <a href="sprints" class="nav-link" title="Sprints"><i class="fas fa-running nav-icon"></i><span class="nav-text">Sprints</span></a>
+                <?php endif; ?>
                 <a href="calendar" class="nav-link" title="Calendar"><i class="fas fa-calendar-alt nav-icon"></i><span class="nav-text">Calendar</span></a>
                 <?php if (isSuperAdmin() || isOrgAdmin() || isProjectManager()): ?>
                     <a href="reports" class="nav-link" title="Reports"><i class="fas fa-chart-bar nav-icon"></i><span class="nav-text">Reports</span></a>
