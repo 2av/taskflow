@@ -125,10 +125,14 @@ function getStatuses($organization_id = null) {
 function buildStatusCountSQL($statuses, $prefix = '') {
     $cases = [];
     foreach ($statuses as $status) {
-        $status_name = $status['name'];
+        $status_name = $status['name'] ?? '';
         $status_key = strtolower(str_replace(' ', '_', $status_name));
+        $status_key = str_replace('`', '', $status_key);
+        if ($status_key === '') {
+            $status_key = 'status';
+        }
         $escaped_name = addslashes($status_name);
-        $cases[] = "SUM(CASE WHEN {$prefix}status = '{$escaped_name}' THEN 1 ELSE 0 END) as {$status_key}_count";
+        $cases[] = "SUM(CASE WHEN {$prefix}`status` = '{$escaped_name}' THEN 1 ELSE 0 END) as `{$status_key}_count`";
     }
     return implode(",\n               ", $cases);
 }
