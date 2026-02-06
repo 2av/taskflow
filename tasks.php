@@ -916,6 +916,145 @@ if ($tasks_has_sprint && !empty($tasks)) {
     }
 }
 
+// Active sprints list (for per-sprint sections: SPRINT NAME + task table)
+$active_sprints_list = [];
+if ($tasks_has_sprint && !empty($projects)) {
+    $project_ids_for_sprints = !empty($filter_project) ? $filter_project : array_map('intval', array_column($projects, 'id'));
+    $project_ids_for_sprints = array_filter($project_ids_for_sprints);
+    if (!empty($project_ids_for_sprints)) {
+        $ph = implode(',', array_fill(0, count($project_ids_for_sprints), '?'));
+        $sprint_where_extra = '';
+        $sprint_params = $project_ids_for_sprints;
+        $sprint_types = str_repeat('i', count($project_ids_for_sprints));
+        if (isOrgAdmin() && $organization_id) {
+            $sprint_where_extra = " AND p.organization_id = ?";
+            $sprint_params[] = $organization_id;
+            $sprint_types .= 'i';
+        }
+        $sprint_list_query = "SELECT s.id, s.name, s.project_id, p.name as project_name FROM sprints s JOIN projects p ON s.project_id = p.id WHERE s.status = 'active' AND s.project_id IN ($ph) $sprint_where_extra ORDER BY p.name, s.start_date DESC, s.name";
+        $sstmt = $conn->prepare($sprint_list_query);
+        if ($sstmt) {
+            $sstmt->bind_param($sprint_types, ...$sprint_params);
+            $sstmt->execute();
+            $active_sprints_list = $sstmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $sstmt->close();
+        }
+    }
+}
+
+// Fetch full task rows per active sprint (for sprint-wise tables above main table)
+$tasks_by_sprint = [];
+if ($tasks_has_sprint && !empty($active_sprints_list)) {
+    $where_conditions_no_sprint = array_filter($where_conditions, function($c) {
+        return strpos($c, 'sprint_id') === false;
+    });
+    $where_sprint_clause = "WHERE " . implode(" AND ", array_merge($where_conditions_no_sprint, ["t.sprint_id = ?"]));
+    $sprint_task_query = "
+        SELECT t.*, t.task_id, t.type, p.name as project_name, u.full_name as assignee_name, u2.full_name as creator_name,
+               COALESCE(s.name, t.status, 'To Do') as status,
+               t.status_id
+               $sprint_select
+        FROM tasks t
+        LEFT JOIN projects p ON t.project_id = p.id
+        LEFT JOIN statuses s ON t.status_id = s.id
+        LEFT JOIN users u ON t.assignee_id = u.id
+        LEFT JOIN users u2 ON t.created_by = u2.id
+        $sprint_join
+        $where_sprint_clause
+        ORDER BY t.created_at DESC
+    ";
+    $base_params = array_slice($query_params, 0, -2); // without limit, offset
+    if ($filter_sprint_id !== null) {
+        $base_params = array_slice($base_params, 0, -1); // remove sprint param if present
+    }
+    $base_types = $query_types;
+    $base_types = substr($base_types, 0, -2); // remove 'ii' for limit, offset
+    if ($filter_sprint_id !== null) {
+        $base_types = substr($base_types, 0, -1); // remove 'i' for sprint
+    }
+    foreach ($active_sprints_list as $srow) {
+        $sprint_id = (int)$srow['id'];
+        $sprint_params = array_merge($base_params, [$sprint_id]);
+        $sprint_types = $base_types . 'i';
+        $sstmt = $conn->prepare($sprint_task_query);
+        if ($sstmt) {
+            $sstmt->bind_param($sprint_types, ...$sprint_params);
+            $sstmt->execute();
+            $tasks_by_sprint[$sprint_id] = $sstmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $sstmt->close();
+        } else {
+            $tasks_by_sprint[$sprint_id] = [];
+        }
+    }
+    // Ensure $sprints_by_project has entries for all projects that appear in sprint task lists
+    foreach ($tasks_by_sprint as $sprint_tasks) {
+        foreach ($sprint_tasks as $t) {
+            $pid = (int)($t['project_id'] ?? 0);
+            if ($pid && !isset($sprints_by_project[$pid])) {
+                $stmt_sp = $conn->prepare("SELECT id, name FROM sprints WHERE project_id = ? ORDER BY start_date DESC, name");
+                if ($stmt_sp) {
+                    $stmt_sp->bind_param("i", $pid);
+                    $stmt_sp->execute();
+                    $sprints_by_project[$pid] = $stmt_sp->get_result()->fetch_all(MYSQLI_ASSOC);
+                    $stmt_sp->close();
+                }
+            }
+        }
+    }
+}
+
+// Fetch backlog tasks only (no sprint) for the second table when sprint feature is on
+$backlog_tasks = [];
+if ($tasks_has_sprint && !empty($projects)) {
+    $where_conditions_no_sprint = array_filter($where_conditions, function($c) {
+        return strpos($c, 'sprint_id') === false;
+    });
+    $where_backlog_clause = "WHERE " . implode(" AND ", array_merge($where_conditions_no_sprint, ["(t.sprint_id IS NULL OR t.sprint_id = 0)"]));
+    $backlog_task_query = "
+        SELECT t.*, t.task_id, t.type, p.name as project_name, u.full_name as assignee_name, u2.full_name as creator_name,
+               COALESCE(s.name, t.status, 'To Do') as status,
+               t.status_id
+               $sprint_select
+        FROM tasks t
+        LEFT JOIN projects p ON t.project_id = p.id
+        LEFT JOIN statuses s ON t.status_id = s.id
+        LEFT JOIN users u ON t.assignee_id = u.id
+        LEFT JOIN users u2 ON t.created_by = u2.id
+        $sprint_join
+        $where_backlog_clause
+        ORDER BY t.created_at DESC
+    ";
+    $backlog_params = array_slice($query_params, 0, -2);
+    if ($filter_sprint_id !== null) {
+        $backlog_params = array_slice($backlog_params, 0, -1);
+    }
+    $backlog_types = substr($query_types, 0, -2);
+    if ($filter_sprint_id !== null) {
+        $backlog_types = substr($backlog_types, 0, -1);
+    }
+    $bstmt = $conn->prepare($backlog_task_query);
+    if ($bstmt) {
+        if (!empty($backlog_params)) {
+            $bstmt->bind_param($backlog_types, ...$backlog_params);
+        }
+        $bstmt->execute();
+        $backlog_tasks = $bstmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $bstmt->close();
+    }
+    foreach ($backlog_tasks as $t) {
+        $pid = (int)($t['project_id'] ?? 0);
+        if ($pid && !isset($sprints_by_project[$pid])) {
+            $stmt_sp = $conn->prepare("SELECT id, name FROM sprints WHERE project_id = ? ORDER BY start_date DESC, name");
+            if ($stmt_sp) {
+                $stmt_sp->bind_param("i", $pid);
+                $stmt_sp->execute();
+                $sprints_by_project[$pid] = $stmt_sp->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt_sp->close();
+            }
+        }
+    }
+}
+
 // Get assignee statistics (users who have tasks assigned in current project/org)
 // Exclude status and assignee filters so all assignees are shown
 $assignee_stats = [];
@@ -1790,9 +1929,86 @@ include 'includes/header.php';
             <?php endforeach; ?>
         <?php endif; ?>
     </form>
-    
 
-    <!-- Tasks Table -->
+    <?php
+    // Per-sprint: for each active sprint, show SPRINT NAME then related task table
+    if ($tasks_has_sprint && !empty($active_sprints_list) && !empty($tasks_by_sprint)):
+        foreach ($active_sprints_list as $srow):
+            $sprint_id = (int)$srow['id'];
+            $sprint_tasks = $tasks_by_sprint[$sprint_id] ?? [];
+            if (empty($sprint_tasks)) continue;
+            $sprint_name = htmlspecialchars($srow['name']);
+    ?>
+    <div class="sprint-tasks-section" style="margin-bottom: 28px;">
+        <h3 style="font-size: 16px; font-weight: 600; color: var(--text-primary); margin: 0 0 12px 0; padding-bottom: 8px; border-bottom: 2px solid var(--blue);">
+            <i class="fas fa-running" style="margin-right: 8px; color: var(--blue);"></i><?php echo $sprint_name; ?>
+        </h3>
+        <div class="tasks-table-container">
+            <table class="tasks-table">
+                <thead>
+                    <tr>
+                        <th>Task ID / Type</th>
+                        <th>Task</th>
+                        <?php if ($tasks_has_sprint): ?><th style="text-align: center;">Sprint</th><?php endif; ?>
+                        <th style="text-align: center;">Status</th>
+                        <th style="text-align: center;">Priority</th>
+                        <th style="text-align: center;">Due Date</th>
+                        <th style="text-align: center;">Assignee</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($sprint_tasks as $task):
+                        $row_id_prefix = 'sprint_' . $sprint_id . '_';
+                        include __DIR__ . '/includes/task_table_row.php';
+                    endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <?php
+        endforeach;
+    endif;
+    ?>
+
+    <?php if ($tasks_has_sprint): ?>
+    <!-- Second table: Backlog (only backlog tasks, no sprint tasks) -->
+    <div class="backlog-tasks-section" style="margin-bottom: 28px;">
+        <h3 style="font-size: 16px; font-weight: 600; color: var(--text-primary); margin: 0 0 12px 0; padding-bottom: 8px; border-bottom: 2px solid var(--text-muted);">
+            <i class="fas fa-inbox" style="margin-right: 8px; color: var(--text-muted);"></i>Backlog
+        </h3>
+        <div class="tasks-table-container">
+            <table class="tasks-table">
+                <thead>
+                    <tr>
+                        <th>Task ID / Type</th>
+                        <th>Task</th>
+                        <?php if ($tasks_has_sprint): ?><th style="text-align: center;">Sprint</th><?php endif; ?>
+                        <th style="text-align: center;">Status</th>
+                        <th style="text-align: center;">Priority</th>
+                        <th style="text-align: center;">Due Date</th>
+                        <th style="text-align: center;">Assignee</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php if (empty($backlog_tasks)): ?>
+                        <tr>
+                            <td colspan="<?php echo $tasks_has_sprint ? 8 : 7; ?>" style="text-align: center; padding: 48px 16px; color: var(--text-muted);">
+                                <i class="fas fa-inbox" style="font-size: 48px; opacity: 0.3; margin-bottom: 12px; display: block;"></i>
+                                <p style="margin: 0; font-size: 14px;">No backlog tasks</p>
+                            </td>
+                        </tr>
+                    <?php else: ?>
+                        <?php foreach ($backlog_tasks as $task):
+                            $row_id_prefix = 'backlog_';
+                            include __DIR__ . '/includes/task_table_row.php';
+                        endforeach; ?>
+                    <?php endif; ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <?php else: ?>
+    <!-- Tasks Table (all tasks - when sprint feature is off) -->
     <div class="tasks-table-container">
         <table class="tasks-table">
             <thead>
@@ -1823,157 +2039,15 @@ include 'includes/header.php';
                         </td>
                     </tr>
                 <?php else: ?>
-                    <?php foreach ($tasks as $task): ?>
-                        <?php 
-                        // Get status info from database using status_id
-                        $task_status_id = $task['status_id'] ?? null;
-                        $task_status = $task['status'] ?? 'To Do';
-                        
-                        // Get status info by ID if available, otherwise by name
-                        if ($task_status_id) {
-                            $status_info = null;
-                            foreach ($statuses as $s) {
-                                if ($s['id'] == $task_status_id) {
-                                    $status_info = $s;
-                                    break;
-                                }
-                            }
-                        } else {
-                            $status_info = getStatusByName($task_status, $organization_id);
-                        }
-                        
-                        $status_color = $status_info['color'] ?? '#6c757d';
-                        $status_lower = strtolower(str_replace(' ', '-', $task_status));
-                        $status_class = 'table-status-pending';
-                        if (stripos($task_status, 'progress') !== false || stripos($task_status, 'active') !== false) {
-                            $status_class = 'table-status-active';
-                        } elseif (stripos($task_status, 'done') !== false || stripos($task_status, 'closed') !== false || stripos($task_status, 'complete') !== false) {
-                            $status_class = 'table-status-closed';
-                        }
-                        
-                        // Priority badge class
-                        $priority_lower = strtolower($task['priority'] ?? '');
-                        $priority_class = 'priority-low';
-                        if ($priority_lower == 'high') {
-                            $priority_class = 'priority-high';
-                        } elseif ($priority_lower == 'medium') {
-                            $priority_class = 'priority-medium';
-                        }
-                        
-                        // Due date formatting
-                        $due_date_display = '—';
-                        if (!empty($task['due_date'])) {
-                            $due_date_display = date('d-m-Y', strtotime($task['due_date']));
-                        }
-                        
-                        // Assignee initials
-                        $assignee_initials = '';
-                        if (!empty($task['assignee_name'])) {
-                            $assignee_initials = getInitials($task['assignee_name']);
-                        }
-                        ?>
-                        <tr data-task-id="<?php echo $task['id']; ?>" style="cursor: pointer; transition: background-color 0.2s;" class="task-row">
-                            <td>
-                                <?php
-                                // Get icon for task type
-                                $task_type = $task['type'] ?? 'Task';
-                                $type_icon = 'fa-tasks';
-                                $type_color = '#14b8a6';
-                                if ($task_type == 'Bug') {
-                                    $type_icon = 'fa-bug';
-                                    $type_color = '#e74c3c';
-                                } elseif ($task_type == 'Improvement') {
-                                    $type_icon = 'fa-lightbulb';
-                                    $type_color = '#f39c12';
-                                }
-                                ?>
-                                <div style="display: flex; gap: 8px; align-items: center;">
-                                    <span style="font-size: 12px; font-weight: 600; color: var(--text-primary);"><?php echo htmlspecialchars($task['task_id'] ?? '—'); ?></span>
-                                    <i class="fas <?php echo $type_icon; ?>" style="font-size: 12px; color: <?php echo $type_color; ?>; display: inline-block; padding: 4px 0px;" title="<?php echo htmlspecialchars($task_type); ?>"></i>
-                                </div>
-                            </td>
-                            <td>
-                                <div class="task-name-cell">
-                                    <span class="task-name-text"><?php echo htmlspecialchars($task['title']); ?></span>
-                                </div>
-                            </td>
-                            <?php if ($tasks_has_sprint): ?>
-                            <td style="text-align: center;" onclick="event.stopPropagation();">
-                                <?php
-                                $task_project_id = (int)$task['project_id'];
-                                $task_sprints = $sprints_by_project[$task_project_id] ?? [];
-                                ?>
-                                <?php if (!empty($task_sprints)): ?>
-                                    <form method="POST" action="" style="display: inline-block; margin: 0;" id="sprintForm_<?php echo $task['id']; ?>" onsubmit="return updateTaskSprintQuick(<?php echo $task['id']; ?>, this);">
-                                        <input type="hidden" name="task_id" value="<?php echo $task['id']; ?>">
-                                        <input type="hidden" name="update_sprint_quick" value="1">
-                                        <select name="sprint_id"
-                                                onchange="this.form.submit();"
-                                                style="padding: 4px 24px 4px 8px; border: 1px solid var(--border-color); font-size: 12px; cursor: pointer; background: white; color: var(--text-primary); appearance: none; background-image: url('data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 12 12\'%3E%3Cpath fill=\'%23333333\' d=\'M6 9L1 4h10z\'/%3E%3C/svg%3E'); background-repeat: no-repeat; background-position: right 8px center; min-width: 120px;">
-                                            <option value="">Backlog</option>
-                                            <?php foreach ($task_sprints as $spr): ?>
-                                                <option value="<?php echo (int)$spr['id']; ?>" <?php echo (isset($task['sprint_id']) && (int)$task['sprint_id'] === (int)$spr['id']) ? 'selected' : ''; ?>><?php echo htmlspecialchars($spr['name']); ?></option>
-                                            <?php endforeach; ?>
-                                        </select>
-                                    </form>
-                                <?php else: ?>
-                                    <?php if (!empty($task['sprint_name'])): ?>
-                                        <a href="sprints?project_id=<?php echo (int)$task['project_id']; ?>&sprint_id=<?php echo (int)$task['sprint_id']; ?>#backlog" class="table-status-badge table-status-active" style="text-decoration: none;"><?php echo htmlspecialchars($task['sprint_name']); ?></a>
-                                    <?php else: ?>
-                                        <span style="color: var(--text-muted);">—</span>
-                                    <?php endif; ?>
-                                <?php endif; ?>
-                            </td>
-                            <?php endif; ?>
-                            <td style="text-align: center;" onclick="event.stopPropagation();">
-                                <form method="POST" action="" style="display: inline-block; margin: 0;" id="statusForm_<?php echo $task['id']; ?>" onsubmit="return updateTaskStatusQuick(<?php echo $task['id']; ?>, this);">
-                                    <input type="hidden" name="task_id" value="<?php echo $task['id']; ?>">
-                                    <input type="hidden" name="update_status_quick" value="1">
-                                    <select name="status_id" 
-                                            onchange="this.form.submit();" 
-                                            onclick="event.stopPropagation();"
-                                            style="padding: 4px 24px 4px 8px; border: 1px solid var(--border-color);  font-size: 12px; font-weight: 500; cursor: pointer; background: white; color: var(--text-primary); appearance: none; background-image: url('data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 12 12\'%3E%3Cpath fill=\'%23333333\' d=\'M6 9L1 4h10z\'/%3E%3C/svg%3E'); background-repeat: no-repeat; background-position: right 8px center; min-width: 110px;">
-                                        <?php foreach ($statuses as $status_option): ?>
-                                            <option value="<?php echo $status_option['id']; ?>" <?php echo ($task_status_id == $status_option['id']) ? 'selected' : ''; ?>>
-                                                <?php echo htmlspecialchars($status_option['name']); ?>
-                                            </option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                </form>
-                            </td>
-                            <td style="text-align: center;">
-                                <span class="table-priority-badge <?php echo $priority_class; ?>">
-                                    <?php echo htmlspecialchars($task['priority'] ?? 'Low'); ?>
-                                </span>
-                            </td>
-                            <td style="text-align: center;">
-                                <span class="due-date-text"><?php echo $due_date_display; ?></span>
-                            </td>
-                            <td style="text-align: center;" onclick="event.stopPropagation();">
-                                <form method="POST" action="" style="display: inline-block; margin: 0;" id="assigneeForm_<?php echo $task['id']; ?>" onsubmit="return updateTaskAssigneeQuick(<?php echo $task['id']; ?>, this);">
-                                    <input type="hidden" name="task_id" value="<?php echo $task['id']; ?>">
-                                    <input type="hidden" name="update_assignee_quick" value="1">
-                                    <select name="assignee_id"
-                                            onchange="this.form.submit();"
-                                            onclick="event.stopPropagation();"
-                                            style="padding: 4px 24px 4px 8px; border: 1px solid var(--border-color); font-size: 12px; cursor: pointer; background: white; color: var(--text-primary); appearance: none; background-image: url('data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 12 12\'%3E%3Cpath fill=\'%23333333\' d=\'M6 9L1 4h10z\'/%3E%3C/svg%3E'); background-repeat: no-repeat; background-position: right 8px center; min-width: 130px;">
-                                        <option value=""><?php echo $assignee_initials ? htmlspecialchars($task['assignee_name']) : 'Unassigned'; ?></option>
-                                        <?php if (!empty($users)): ?>
-                                            <?php foreach ($users as $user): ?>
-                                                <option value="<?php echo $user['id']; ?>" <?php echo (!empty($task['assignee_id']) && $task['assignee_id'] == $user['id']) ? 'selected' : ''; ?>>
-                                                    <?php echo htmlspecialchars($user['full_name']); ?>
-                                                </option>
-                                            <?php endforeach; ?>
-                                        <?php endif; ?>
-                                    </select>
-                                </form>
-                            </td>
-                        </tr>
-                    <?php endforeach; ?>
+                    <?php foreach ($tasks as $task):
+                        $row_id_prefix = '';
+                        include __DIR__ . '/includes/task_table_row.php';
+                    endforeach; ?>
                 <?php endif; ?>
             </tbody>
         </table>
     </div>
+    <?php endif; ?>
 
     <!-- Task View Modal (full-screen overlay, covers entire page) -->
     <div id="taskViewModal" style="display: none; position: fixed; left: 0; right: 0; top: 0; bottom: 0; z-index: 1100;">
@@ -1990,7 +2064,8 @@ include 'includes/header.php';
         </div>
     </div>
 
-    <!-- Pagination -->
+    <?php if (!$tasks_has_sprint): ?>
+    <!-- Pagination (only when not showing sprint + backlog layout) -->
     <div class="pagination-container" id="paginationContainer">
         <div class="pagination-info">
             Showing <?php echo min(($current_page - 1) * $items_per_page + 1, $total_items); ?> to <?php echo min($current_page * $items_per_page, $total_items); ?> of <?php echo $total_items; ?> tasks
@@ -2004,6 +2079,7 @@ include 'includes/header.php';
             ?>
         </div>
     </div>
+    <?php endif; ?>
 </div>
 
 <link href="https://cdn.quilljs.com/1.3.6/quill.snow.css" rel="stylesheet">

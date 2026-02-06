@@ -518,6 +518,161 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['delete_timelog'])) {
     $stmt->close();
 }
 
+// --- Task Cost: ensure schema exists ---
+$chk_cost_col = $conn->query("SHOW COLUMNS FROM tasks LIKE 'total_cost'");
+if ($chk_cost_col && $chk_cost_col->num_rows === 0) {
+    $conn->query("ALTER TABLE tasks ADD COLUMN total_cost DECIMAL(12,2) DEFAULT NULL COMMENT 'Total task cost'");
+}
+$conn->query("
+CREATE TABLE IF NOT EXISTS task_cost_transactions (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    task_id INT NOT NULL,
+    type ENUM('payment','expense','transfer_in') NOT NULL,
+    amount DECIMAL(12,2) NOT NULL,
+    description VARCHAR(500) DEFAULT NULL,
+    source_task_id INT DEFAULT NULL,
+    created_by INT DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+    FOREIGN KEY (source_task_id) REFERENCES tasks(id) ON DELETE SET NULL,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+)
+");
+
+// Handle set total task cost
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_total_cost'])) {
+    $user_id = $_SESSION['user_id'];
+    $is_ajax = !empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest';
+    $total_cost = isset($_POST['total_cost']) && $_POST['total_cost'] !== '' ? floatval($_POST['total_cost']) : null;
+    if ($total_cost !== null && $total_cost < 0) {
+        $total_cost = 0;
+    }
+    $stmt = $conn->prepare("UPDATE tasks SET total_cost = ? WHERE id = ?");
+    $stmt->bind_param("di", $total_cost, $task_id);
+    if ($stmt->execute()) {
+        $action = $total_cost !== null ? "Total cost set to " . number_format($total_cost, 2) : "Total cost cleared";
+        $activity_stmt = $conn->prepare("INSERT INTO activity_logs (task_id, user_id, action) VALUES (?, ?, ?)");
+        $activity_stmt->bind_param("iis", $task_id, $user_id, $action);
+        $activity_stmt->execute();
+        $activity_stmt->close();
+        if ($is_ajax) {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => true, 'message' => 'Total cost updated', 'total_cost' => $total_cost]);
+            exit();
+        }
+    } else {
+        if ($is_ajax) {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => false, 'error' => 'Failed to update total cost']);
+            exit();
+        }
+    }
+    $stmt->close();
+}
+
+// Handle add cost transaction (payment = amount received, or expense)
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['add_cost_transaction'])) {
+    $user_id = $_SESSION['user_id'];
+    $is_ajax = !empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest';
+    $type = in_array($_POST['type'] ?? '', ['payment', 'expense']) ? $_POST['type'] : 'payment';
+    $amount = floatval($_POST['amount'] ?? 0);
+    $description = trim($_POST['description'] ?? '');
+    if ($amount <= 0) {
+        if ($is_ajax) {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => false, 'error' => 'Amount must be greater than 0']);
+            exit();
+        }
+    } else {
+        $stmt = $conn->prepare("INSERT INTO task_cost_transactions (task_id, type, amount, description, created_by) VALUES (?, ?, ?, ?, ?)");
+        $stmt->bind_param("isdsi", $task_id, $type, $amount, $description, $user_id);
+        if ($stmt->execute()) {
+            $tx_id = $conn->insert_id;
+            $action = ($type === 'payment' ? 'Payment received' : 'Expense') . ': ' . number_format($amount, 2);
+            $activity_stmt = $conn->prepare("INSERT INTO activity_logs (task_id, user_id, action) VALUES (?, ?, ?)");
+            $activity_stmt->bind_param("iis", $task_id, $user_id, $action);
+            $activity_stmt->execute();
+            $activity_stmt->close();
+            if ($is_ajax) {
+                $row = $conn->query("SELECT t.*, u.full_name, u.email FROM task_cost_transactions t LEFT JOIN users u ON t.created_by = u.id WHERE t.id = " . intval($tx_id))->fetch_assoc();
+                header('Content-Type: application/json');
+                echo json_encode(['success' => true, 'message' => 'Transaction added', 'transaction' => $row]);
+                exit();
+            }
+        }
+        $stmt->close();
+    }
+}
+
+// Handle add transaction from another task (transfer/add from other task)
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['add_cost_transfer_from_task'])) {
+    $user_id = $_SESSION['user_id'];
+    $is_ajax = !empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest';
+    $source_task_id = intval($_POST['source_task_id'] ?? 0);
+    $amount = floatval($_POST['amount'] ?? 0);
+    $description = trim($_POST['description'] ?? '');
+    if ($source_task_id <= 0 || $source_task_id == $task_id) {
+        if ($is_ajax) {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => false, 'error' => 'Please select a different task']);
+            exit();
+        }
+    } elseif ($amount <= 0) {
+        if ($is_ajax) {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => false, 'error' => 'Amount must be greater than 0']);
+            exit();
+        }
+    } else {
+        $stmt = $conn->prepare("INSERT INTO task_cost_transactions (task_id, type, amount, description, source_task_id, created_by) VALUES (?, 'transfer_in', ?, ?, ?, ?)");
+        $stmt->bind_param("idsii", $task_id, $amount, $description, $source_task_id, $user_id);
+        if ($stmt->execute()) {
+            $tx_id = $conn->insert_id;
+            $src = $conn->query("SELECT task_id, title FROM tasks WHERE id = " . intval($source_task_id))->fetch_assoc();
+            $action = "Amount transferred in from task: " . ($src['task_id'] ?? '#'.$source_task_id) . " - " . number_format($amount, 2);
+            $activity_stmt = $conn->prepare("INSERT INTO activity_logs (task_id, user_id, action) VALUES (?, ?, ?)");
+            $activity_stmt->bind_param("iis", $task_id, $user_id, $action);
+            $activity_stmt->execute();
+            $activity_stmt->close();
+            if ($is_ajax) {
+                $row = $conn->query("SELECT t.*, u.full_name, u.email, st.task_id as source_task_ref, st.title as source_task_title FROM task_cost_transactions t LEFT JOIN users u ON t.created_by = u.id LEFT JOIN tasks st ON t.source_task_id = st.id WHERE t.id = " . intval($tx_id))->fetch_assoc();
+                header('Content-Type: application/json');
+                echo json_encode(['success' => true, 'message' => 'Transfer added', 'transaction' => $row]);
+                exit();
+            }
+        }
+        $stmt->close();
+    }
+}
+
+// Handle delete cost transaction
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['delete_cost_transaction'])) {
+    $user_id = $_SESSION['user_id'];
+    $is_ajax = !empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest';
+    $tx_id = intval($_POST['transaction_id'] ?? 0);
+    $stmt = $conn->prepare("DELETE FROM task_cost_transactions WHERE id = ? AND task_id = ?");
+    $stmt->bind_param("ii", $tx_id, $task_id);
+    if ($stmt->execute() && $stmt->affected_rows > 0) {
+        $activity_stmt = $conn->prepare("INSERT INTO activity_logs (task_id, user_id, action) VALUES (?, ?, ?)");
+        $act = "Cost transaction deleted";
+        $activity_stmt->bind_param("iis", $task_id, $user_id, $act);
+        $activity_stmt->execute();
+        $activity_stmt->close();
+        if ($is_ajax) {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => true, 'message' => 'Transaction deleted']);
+            exit();
+        }
+    } else {
+        if ($is_ajax) {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => false, 'error' => 'Transaction not found or already deleted']);
+            exit();
+        }
+    }
+    $stmt->close();
+}
+
 // Handle comment edit
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['edit_comment'])) {
     $comment_id = intval($_POST['comment_id'] ?? 0);
@@ -1291,6 +1446,43 @@ if ($has_sprint && !empty($task['project_id'])) {
         $task_sprints = $stmt_spr->get_result()->fetch_all(MYSQLI_ASSOC);
         $stmt_spr->close();
     }
+}
+
+// Task cost: total cost, transactions, totals
+$task_total_cost = isset($task['total_cost']) && $task['total_cost'] !== null ? floatval($task['total_cost']) : null;
+$cost_transactions = [];
+$cost_total_received = 0;
+$cost_total_transfer_in = 0;
+$other_tasks_for_transfer = [];
+$cost_table_exists = $conn->query("SHOW TABLES LIKE 'task_cost_transactions'");
+if ($cost_table_exists && $cost_table_exists->num_rows > 0) {
+    $ct_stmt = $conn->prepare("
+        SELECT t.id, t.task_id, t.type, t.amount, t.description, t.source_task_id, t.created_at,
+               u.full_name, u.email,
+               st.task_id as source_task_ref, st.title as source_task_title
+        FROM task_cost_transactions t
+        LEFT JOIN users u ON t.created_by = u.id
+        LEFT JOIN tasks st ON t.source_task_id = st.id
+        WHERE t.task_id = ?
+        ORDER BY t.created_at DESC
+    ");
+    $ct_stmt->bind_param("i", $task_id);
+    $ct_stmt->execute();
+    $cost_transactions = $ct_stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $ct_stmt->close();
+    foreach ($cost_transactions as $tx) {
+        if (($tx['type'] ?? '') === 'payment') {
+            $cost_total_received += floatval($tx['amount']);
+        } elseif (($tx['type'] ?? '') === 'transfer_in') {
+            $cost_total_transfer_in += floatval($tx['amount']);
+        }
+    }
+    // Other tasks (same project, exclude current) for transfer dropdown
+    $ot_stmt = $conn->prepare("SELECT id, task_id, title FROM tasks WHERE project_id = ? AND id != ? ORDER BY task_id ASC");
+    $ot_stmt->bind_param("ii", $task['project_id'], $task_id);
+    $ot_stmt->execute();
+    $other_tasks_for_transfer = $ot_stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $ot_stmt->close();
 }
 
 $conn->close();
@@ -2959,6 +3151,9 @@ body .content-wrapper:has(.task-view-page) {
                         }
                         ?>
                     </button>
+                    <button class="tab-btn" data-tab="cost" onclick="switchMainTab('cost')" style="padding: 12px 20px; background: none; border: none; border-bottom: 2px solid transparent; color: var(--text-secondary); font-weight: 500; font-size: 14px; cursor: pointer; margin-bottom: -2px;">
+                        Cost
+                    </button>
                 </div>
                 
                 <!-- Tab Content: Description -->
@@ -3285,6 +3480,181 @@ body .content-wrapper:has(.task-view-page) {
                         </div>
                     </div>
                 </div>
+
+                <!-- Tab Content: Cost -->
+                <div id="main-tab-cost" class="tab-content" style="display: none; padding: 24px;">
+                    <div class="cost-panel">
+                        <div class="cost-panel-header" style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; flex-wrap: wrap; gap: 16px;">
+                            <div>
+                                <h3 class="cost-panel-title" style="margin: 0; font-size: 18px; font-weight: 600; color: var(--text-primary);">Cost</h3>
+                                <div style="margin-top: 12px; display: flex; flex-wrap: wrap; gap: 16px; align-items: center;">
+                                    <div style="padding: 10px 16px; background: var(--page-bg); border-radius: 8px; border: 1px solid var(--border-color);">
+                                        <span style="font-size: 12px; color: var(--text-muted); display: block;">Total task cost</span>
+                                        <span id="cost-display-total" style="font-size: 18px; font-weight: 700; color: var(--text-primary);">
+                                            <?php echo $task_total_cost !== null ? number_format($task_total_cost, 2) : '—'; ?>
+                                        </span>
+                                    </div>
+                                    <div style="padding: 10px 16px; background: #ecfdf5; border-radius: 8px; border: 1px solid #a7f3d0;">
+                                        <span style="font-size: 12px; color: #047857;">Amount received</span>
+                                        <span id="cost-display-received" style="font-size: 18px; font-weight: 700; color: #047857;">
+                                            <?php echo number_format($cost_total_received, 2); ?>
+                                        </span>
+                                    </div>
+                                    <?php if ($cost_total_transfer_in > 0): ?>
+                                    <div style="padding: 10px 16px; background: #eff6ff; border-radius: 8px; border: 1px solid #bfdbfe;">
+                                        <span style="font-size: 12px; color: #1d4ed8;">Transferred in</span>
+                                        <span style="font-size: 18px; font-weight: 700; color: #1d4ed8;"><?php echo number_format($cost_total_transfer_in, 2); ?></span>
+                                    </div>
+                                    <?php endif; ?>
+                                    <?php if ($task_total_cost !== null && ($task_total_cost > 0 || $cost_total_received > 0 || $cost_total_transfer_in > 0)): 
+                                        $balance = $task_total_cost - $cost_total_received - $cost_total_transfer_in;
+                                    ?>
+                                    <div style="padding: 10px 16px; background: <?php echo $balance <= 0 ? '#ecfdf5' : '#fef3c7'; ?>; border-radius: 8px; border: 1px solid <?php echo $balance <= 0 ? '#a7f3d0' : '#fcd34d'; ?>;">
+                                        <span style="font-size: 12px; color: <?php echo $balance <= 0 ? '#047857' : '#92400e'; ?>;">Balance</span>
+                                        <span style="font-size: 18px; font-weight: 700; color: <?php echo $balance <= 0 ? '#047857' : '#92400e'; ?>;"><?php echo number_format($balance, 2); ?></span>
+                                    </div>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                <button type="button" onclick="openSetTotalCostModal()" style="background: var(--page-bg); color: var(--text-primary); border: 1px solid var(--border-color); padding: 8px 16px; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer; display: flex; align-items: center; gap: 6px;">
+                                    <i class="fas fa-tag"></i> Set total cost
+                                </button>
+                                <button type="button" onclick="openAddPaymentModal()" style="background: #059669; color: white; border: none; padding: 8px 16px; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer; display: flex; align-items: center; gap: 6px;">
+                                    <i class="fas fa-money-bill-wave"></i> Add payment
+                                </button>
+                                <button type="button" onclick="openAddTransferModal()" style="background: var(--blue); color: white; border: none; padding: 8px 16px; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer; display: flex; align-items: center; gap: 6px;">
+                                    <i class="fas fa-exchange-alt"></i> From other task
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Set total cost modal -->
+                        <div id="set-total-cost-modal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 10000; align-items: center; justify-content: center;">
+                            <div style="background: white; border-radius: 12px; padding: 24px; width: 90%; max-width: 400px; box-shadow: 0 10px 25px rgba(0,0,0,0.2);">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                                    <h3 style="margin: 0; font-size: 20px; font-weight: 600; color: var(--text-primary);">Set total task cost</h3>
+                                    <button type="button" onclick="closeSetTotalCostModal()" style="background: none; border: none; font-size: 24px; color: var(--text-muted); cursor: pointer;">&times;</button>
+                                </div>
+                                <form id="set-total-cost-form" onsubmit="saveTotalCost(event)">
+                                    <div style="margin-bottom: 16px;">
+                                        <label style="display: block; margin-bottom: 6px; font-size: 14px; font-weight: 500;">Amount</label>
+                                        <input type="number" id="total-cost-amount" name="total_cost" step="0.01" min="0" placeholder="0.00" style="width: 100%; padding: 10px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; box-sizing: border-box;" value="<?php echo $task_total_cost !== null ? number_format($task_total_cost, 2, '.', '') : ''; ?>">
+                                        <p style="margin: 6px 0 0; font-size: 12px; color: var(--text-muted);">Leave empty to clear.</p>
+                                    </div>
+                                    <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                                        <button type="button" onclick="closeSetTotalCostModal()" style="background: var(--page-bg); color: var(--text-primary); border: 1px solid var(--border-color); padding: 10px 20px; border-radius: 6px; font-size: 14px; cursor: pointer;">Cancel</button>
+                                        <button type="submit" style="background: var(--blue); color: white; border: none; padding: 10px 20px; border-radius: 6px; font-size: 14px; cursor: pointer;">Save</button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+
+                        <!-- Add payment (amount received) modal -->
+                        <div id="add-payment-modal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 10000; align-items: center; justify-content: center;">
+                            <div style="background: white; border-radius: 12px; padding: 24px; width: 90%; max-width: 440px; box-shadow: 0 10px 25px rgba(0,0,0,0.2);">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                                    <h3 style="margin: 0; font-size: 20px; font-weight: 600; color: var(--text-primary);">Add payment (amount received)</h3>
+                                    <button type="button" onclick="closeAddPaymentModal()" style="background: none; border: none; font-size: 24px; color: var(--text-muted); cursor: pointer;">&times;</button>
+                                </div>
+                                <form id="add-payment-form" onsubmit="addPayment(event)">
+                                    <div style="margin-bottom: 16px;">
+                                        <label style="display: block; margin-bottom: 6px; font-size: 14px; font-weight: 500;">Amount *</label>
+                                        <input type="number" id="payment-amount" name="amount" step="0.01" min="0.01" required placeholder="0.00" style="width: 100%; padding: 10px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+                                    </div>
+                                    <div style="margin-bottom: 16px;">
+                                        <label style="display: block; margin-bottom: 6px; font-size: 14px; font-weight: 500;">Description (optional)</label>
+                                        <input type="text" id="payment-description" name="description" placeholder="e.g. Partial payment #1" style="width: 100%; padding: 10px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+                                    </div>
+                                    <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                                        <button type="button" onclick="closeAddPaymentModal()" style="background: var(--page-bg); color: var(--text-primary); border: 1px solid var(--border-color); padding: 10px 20px; border-radius: 6px; font-size: 14px; cursor: pointer;">Cancel</button>
+                                        <button type="submit" style="background: #059669; color: white; border: none; padding: 10px 20px; border-radius: 6px; font-size: 14px; cursor: pointer;">Add payment</button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+
+                        <!-- Add transaction from other task modal -->
+                        <div id="add-transfer-modal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 10000; align-items: center; justify-content: center;">
+                            <div style="background: white; border-radius: 12px; padding: 24px; width: 90%; max-width: 480px; box-shadow: 0 10px 25px rgba(0,0,0,0.2);">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                                    <h3 style="margin: 0; font-size: 20px; font-weight: 600; color: var(--text-primary);">Add amount from another task</h3>
+                                    <button type="button" onclick="closeAddTransferModal()" style="background: none; border: none; font-size: 24px; color: var(--text-muted); cursor: pointer;">&times;</button>
+                                </div>
+                                <p style="margin: 0 0 16px; font-size: 13px; color: var(--text-secondary);">Transfer or add an amount from a different task to this one (cross-task cost adjustment).</p>
+                                <form id="add-transfer-form" onsubmit="addTransferFromTask(event)">
+                                    <div style="margin-bottom: 16px;">
+                                        <label style="display: block; margin-bottom: 6px; font-size: 14px; font-weight: 500;">Task *</label>
+                                        <select id="transfer-source-task" name="source_task_id" required style="width: 100%; padding: 10px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+                                            <option value="">— Select task —</option>
+                                            <?php foreach ($other_tasks_for_transfer as $ot): ?>
+                                            <option value="<?php echo (int)$ot['id']; ?>"><?php echo htmlspecialchars($ot['task_id'] . ' - ' . ($ot['title'] ?? '')); ?></option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </div>
+                                    <div style="margin-bottom: 16px;">
+                                        <label style="display: block; margin-bottom: 6px; font-size: 14px; font-weight: 500;">Amount *</label>
+                                        <input type="number" id="transfer-amount" name="amount" step="0.01" min="0.01" required placeholder="0.00" style="width: 100%; padding: 10px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+                                    </div>
+                                    <div style="margin-bottom: 16px;">
+                                        <label style="display: block; margin-bottom: 6px; font-size: 14px; font-weight: 500;">Description (optional)</label>
+                                        <input type="text" id="transfer-description" name="description" placeholder="e.g. Reallocated from Task X" style="width: 100%; padding: 10px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+                                    </div>
+                                    <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                                        <button type="button" onclick="closeAddTransferModal()" style="background: var(--page-bg); color: var(--text-primary); border: 1px solid var(--border-color); padding: 10px 20px; border-radius: 6px; font-size: 14px; cursor: pointer;">Cancel</button>
+                                        <button type="submit" style="background: var(--blue); color: white; border: none; padding: 10px 20px; border-radius: 6px; font-size: 14px; cursor: pointer;">Add to this task</button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+
+                        <div class="cost-transactions-list" style="margin-top: 20px;">
+                            <?php if (empty($cost_transactions)): ?>
+                                <div style="text-align: center; padding: 30px; color: var(--text-muted); font-size: 13px;">
+                                    <i class="fas fa-coins" style="font-size: 24px; margin-bottom: 8px; opacity: 0.3;"></i>
+                                    <p>No cost transactions yet. Set total cost, add payments (amount received), or add amount from another task.</p>
+                                </div>
+                            <?php else: ?>
+                                <table style="width: 100%; border-collapse: collapse;">
+                                    <thead>
+                                        <tr style="background: var(--page-bg); border-bottom: 2px solid var(--border-color);">
+                                            <th style="padding: 12px; text-align: left; font-size: 13px; font-weight: 600; color: var(--text-primary);">Date</th>
+                                            <th style="padding: 12px; text-align: left; font-size: 13px; font-weight: 600; color: var(--text-primary);">Type</th>
+                                            <th style="padding: 12px; text-align: right; font-size: 13px; font-weight: 600; color: var(--text-primary);">Amount</th>
+                                            <th style="padding: 12px; text-align: left; font-size: 13px; font-weight: 600; color: var(--text-primary);">Description</th>
+                                            <th style="padding: 12px; text-align: left; font-size: 13px; font-weight: 600; color: var(--text-primary);">Source / User</th>
+                                            <th style="padding: 12px; text-align: center; font-size: 13px; font-weight: 600; color: var(--text-primary);">Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php foreach ($cost_transactions as $tx): 
+                                            $type_label = ($tx['type'] ?? '') === 'payment' ? 'Payment' : (($tx['type'] ?? '') === 'transfer_in' ? 'From other task' : 'Expense');
+                                            $type_color = ($tx['type'] ?? '') === 'payment' ? '#047857' : (($tx['type'] ?? '') === 'transfer_in' ? '#1d4ed8' : 'var(--text-secondary)');
+                                        ?>
+                                        <tr id="cost-tx-row-<?php echo (int)$tx['id']; ?>" style="border-bottom: 1px solid var(--border-color);">
+                                            <td style="padding: 12px; font-size: 13px; color: var(--text-secondary);"><?php echo date('M d, Y', strtotime($tx['created_at'])); ?></td>
+                                            <td style="padding: 12px;"><span style="color: <?php echo $type_color; ?>; font-weight: 500;"><?php echo htmlspecialchars($type_label); ?></span></td>
+                                            <td style="padding: 12px; text-align: right; font-weight: 600; color: var(--text-primary);"><?php echo number_format(floatval($tx['amount']), 2); ?></td>
+                                            <td style="padding: 12px; font-size: 13px; color: var(--text-secondary);"><?php echo htmlspecialchars($tx['description'] ?? '—'); ?></td>
+                                            <td style="padding: 12px; font-size: 13px; color: var(--text-secondary);">
+                                                <?php if (!empty($tx['source_task_ref'])): ?>
+                                                    <?php echo htmlspecialchars($tx['source_task_ref'] . ' - ' . ($tx['source_task_title'] ?? '')); ?>
+                                                <?php else: ?>
+                                                    <?php echo htmlspecialchars($tx['full_name'] ?? $tx['email'] ?? '—'); ?>
+                                                <?php endif; ?>
+                                            </td>
+                                            <td style="padding: 12px; text-align: center;">
+                                                <button type="button" onclick="deleteCostTransaction(<?php echo (int)$tx['id']; ?>)" style="background: #ef4444; color: white; border: none; padding: 6px 12px; border-radius: 4px; font-size: 12px; cursor: pointer;" title="Delete"><i class="fas fa-trash"></i></button>
+                                            </td>
+                                        </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                </div>
+
                  <!-- Comments and Activity Section -->
             <div class="comments-activity-section">
                 <!-- Left: Comments Panel -->
@@ -3608,7 +3978,7 @@ body .content-wrapper:has(.task-view-page) {
 // Main Tab switching function
 function switchMainTab(tabName) {
     // Hide all main tab contents
-    document.querySelectorAll('#main-tab-description, #main-tab-activity, #main-tab-attachments, #main-tab-timelog').forEach(content => {
+    document.querySelectorAll('#main-tab-description, #main-tab-activity, #main-tab-attachments, #main-tab-timelog, #main-tab-cost').forEach(content => {
         content.style.display = 'none';
     });
     
@@ -4972,6 +5342,122 @@ async function deleteTimeLog(timelogId) {
     } catch (error) {
         console.error('Error:', error);
         alert('Error deleting time log. Please try again.');
+    }
+}
+
+// --- Cost tab modals and actions ---
+function openSetTotalCostModal() {
+    const m = document.getElementById('set-total-cost-modal');
+    if (m) m.style.display = 'flex';
+}
+function closeSetTotalCostModal() {
+    const m = document.getElementById('set-total-cost-modal');
+    if (m) m.style.display = 'none';
+}
+function openAddPaymentModal() {
+    const m = document.getElementById('add-payment-modal');
+    if (m) { m.style.display = 'flex'; document.getElementById('add-payment-form')?.reset(); }
+}
+function closeAddPaymentModal() {
+    const m = document.getElementById('add-payment-modal');
+    if (m) m.style.display = 'none';
+}
+function openAddTransferModal() {
+    const m = document.getElementById('add-transfer-modal');
+    if (m) { m.style.display = 'flex'; document.getElementById('add-transfer-form')?.reset(); }
+}
+function closeAddTransferModal() {
+    const m = document.getElementById('add-transfer-modal');
+    if (m) m.style.display = 'none';
+}
+
+document.addEventListener('click', function(e) {
+    if (e.target.id === 'set-total-cost-modal') closeSetTotalCostModal();
+    if (e.target.id === 'add-payment-modal') closeAddPaymentModal();
+    if (e.target.id === 'add-transfer-modal') closeAddTransferModal();
+});
+
+async function saveTotalCost(event) {
+    event.preventDefault();
+    const form = document.getElementById('set-total-cost-form');
+    const totalCostInput = document.getElementById('total-cost-amount');
+    const val = totalCostInput.value.trim();
+    const taskId = new URLSearchParams(window.location.search).get('id');
+    const formData = new FormData();
+    formData.append('update_total_cost', '1');
+    formData.append('total_cost', val);
+    try {
+        const response = await fetch('task_view.php?id=' + taskId, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' }, body: formData });
+        const data = await response.json();
+        if (data.success) {
+            closeSetTotalCostModal();
+            document.getElementById('cost-display-total').textContent = data.total_cost !== null && data.total_cost !== '' ? parseFloat(data.total_cost).toFixed(2) : '—';
+            window.location.reload();
+        } else {
+            alert(data.error || 'Failed to update');
+        }
+    } catch (err) {
+        alert('Request failed.');
+    }
+}
+
+async function addPayment(event) {
+    event.preventDefault();
+    const form = document.getElementById('add-payment-form');
+    const taskId = new URLSearchParams(window.location.search).get('id');
+    const formData = new FormData(form);
+    formData.append('add_cost_transaction', '1');
+    formData.append('type', 'payment');
+    try {
+        const response = await fetch('task_view.php?id=' + taskId, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' }, body: formData });
+        const data = await response.json();
+        if (data.success) {
+            closeAddPaymentModal();
+            window.location.reload();
+        } else {
+            alert(data.error || 'Failed to add payment');
+        }
+    } catch (err) {
+        alert('Request failed.');
+    }
+}
+
+async function addTransferFromTask(event) {
+    event.preventDefault();
+    const form = document.getElementById('add-transfer-form');
+    const taskId = new URLSearchParams(window.location.search).get('id');
+    const formData = new FormData(form);
+    formData.append('add_cost_transfer_from_task', '1');
+    try {
+        const response = await fetch('task_view.php?id=' + taskId, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' }, body: formData });
+        const data = await response.json();
+        if (data.success) {
+            closeAddTransferModal();
+            window.location.reload();
+        } else {
+            alert(data.error || 'Failed to add transfer');
+        }
+    } catch (err) {
+        alert('Request failed.');
+    }
+}
+
+async function deleteCostTransaction(txId) {
+    if (!confirm('Delete this transaction?')) return;
+    const taskId = new URLSearchParams(window.location.search).get('id');
+    const formData = new FormData();
+    formData.append('delete_cost_transaction', '1');
+    formData.append('transaction_id', txId);
+    try {
+        const response = await fetch('task_view.php?id=' + taskId, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' }, body: formData });
+        const data = await response.json();
+        if (data.success) {
+            window.location.reload();
+        } else {
+            alert(data.error || 'Failed to delete');
+        }
+    } catch (err) {
+        alert('Request failed.');
     }
 }
 

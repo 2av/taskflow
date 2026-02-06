@@ -135,6 +135,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_sprint'])) {
     }
 }
 
+// Quick update sprint status (from table dropdown)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_sprint_status'])) {
+    $sprint_id = intval($_POST['sprint_id']);
+    $new_status = $_POST['status'] ?? '';
+    $valid_statuses = ['planning', 'active', 'completed', 'closed'];
+    if ($sprint_id && in_array($new_status, $valid_statuses)) {
+        $sprint_row = $conn->query("SELECT project_id FROM sprints WHERE id = $sprint_id")->fetch_assoc();
+        if ($sprint_row) {
+            $stmt = $conn->prepare("UPDATE sprints SET status = ? WHERE id = ?");
+            $stmt->bind_param("si", $new_status, $sprint_id);
+            if ($stmt->execute()) {
+                $stmt->close();
+                $message = 'Sprint status updated to ' . ucfirst($new_status);
+                header('Location: sprints?project_id=' . (int)$sprint_row['project_id'] . '&updated=1');
+                exit();
+            }
+            $stmt->close();
+        }
+    }
+}
+
 // Delete sprint
 if (isset($_GET['delete_sprint'])) {
     $sprint_id = intval($_GET['delete_sprint']);
@@ -295,13 +316,16 @@ include 'includes/header.php';
                                 ?>
                             </td>
                             <td>
-                                <?php
-                                $st = $s['status'];
-                                $st_class = 'table-status-pending';
-                                if ($st === 'active') $st_class = 'table-status-active';
-                                elseif ($st === 'completed' || $st === 'closed') $st_class = 'table-status-closed';
-                                ?>
-                                <span class="table-status-badge <?php echo $st_class; ?>"><?php echo htmlspecialchars(ucfirst($st)); ?></span>
+                                <form method="POST" action="sprints" style="display: inline-block; margin: 0;" id="statusForm_<?php echo (int)$s['id']; ?>">
+                                    <input type="hidden" name="update_sprint_status" value="1">
+                                    <input type="hidden" name="sprint_id" value="<?php echo (int)$s['id']; ?>">
+                                    <select name="status" onchange="this.form.submit();" style="padding: 4px 24px 4px 8px; border: 1px solid var(--border-color); font-size: 12px; font-weight: 500; cursor: pointer; background: white; color: var(--text-primary); appearance: none; background-image: url('data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 12 12\'%3E%3Cpath fill=\'%23333333\' d=\'M6 9L1 4h10z\'/%3E%3C/svg%3E'); background-repeat: no-repeat; background-position: right 8px center; min-width: 100px;">
+                                        <option value="planning" <?php echo ($s['status'] ?? '') === 'planning' ? 'selected' : ''; ?>>Planning</option>
+                                        <option value="active" <?php echo ($s['status'] ?? '') === 'active' ? 'selected' : ''; ?>>Active</option>
+                                        <option value="completed" <?php echo ($s['status'] ?? '') === 'completed' ? 'selected' : ''; ?>>Completed</option>
+                                        <option value="closed" <?php echo ($s['status'] ?? '') === 'closed' ? 'selected' : ''; ?>>Closed</option>
+                                    </select>
+                                </form>
                             </td>
                             <td style="text-align: center;">
                                 <a href="sprints?project_id=<?php echo (int)$s['project_id']; ?>&sprint_id=<?php echo (int)$s['id']; ?>#backlog" class="btn btn-sm btn-primary" title="Sprint backlog">

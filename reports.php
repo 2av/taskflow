@@ -400,7 +400,71 @@ if (isset($_GET['download']) && $_GET['download'] === 'csv') {
     exit;
 }
 
+// Cost Report: tasks with amount set (total_cost) or with any payment/transaction
+$cost_report_available = false;
+$cost_report_tasks = [];
+$cost_report_totals = ['total_cost' => 0, 'total_received' => 0, 'total_transfer_in' => 0, 'count' => 0];
+$chk_cost_col = $conn->query("SHOW COLUMNS FROM tasks LIKE 'total_cost'");
+$chk_cost_tbl = $conn->query("SHOW TABLES LIKE 'task_cost_transactions'");
+if ($chk_cost_col && $chk_cost_col->num_rows > 0 && $chk_cost_tbl && $chk_cost_tbl->num_rows > 0) {
+    $cost_report_available = true;
+    $cost_where = ["( (t.total_cost IS NOT NULL AND t.total_cost > 0) OR t.id IN (SELECT task_id FROM task_cost_transactions) )"];
+    $cost_params = [];
+    $cost_types = '';
+    if (isOrgAdmin() || isProjectManager()) {
+        $org_id = getOrganizationId();
+        if ($org_id) {
+            $cost_where[] = "p.organization_id = ?";
+            $cost_params[] = $org_id;
+            $cost_types .= 'i';
+        }
+    }
+    if ($selected_project_id) {
+        $cost_where[] = "t.project_id = ?";
+        $cost_params[] = $selected_project_id;
+        $cost_types .= 'i';
+    }
+    $cost_where_sql = implode(" AND ", $cost_where);
+    $cost_base_sql = "
+        SELECT t.id, t.task_id, t.title, t.due_date,
+               COALESCE(t.total_cost, 0) AS total_cost,
+               p.name AS project_name,
+               t.status AS status_name,
+               u.full_name AS assignee_name,
+               (SELECT COALESCE(SUM(amount), 0) FROM task_cost_transactions tx WHERE tx.task_id = t.id AND tx.type = 'payment') AS amount_received,
+               (SELECT COALESCE(SUM(amount), 0) FROM task_cost_transactions tx WHERE tx.task_id = t.id AND tx.type = 'transfer_in') AS amount_transfer_in
+        FROM tasks t
+        LEFT JOIN projects p ON t.project_id = p.id
+        LEFT JOIN users u ON t.assignee_id = u.id
+        WHERE $cost_where_sql
+        ORDER BY p.name, t.task_id
+    ";
+    if (!empty($cost_params)) {
+        $cost_stmt = $conn->prepare($cost_base_sql);
+        if ($cost_stmt) {
+            $cost_stmt->bind_param($cost_types, ...$cost_params);
+            $cost_stmt->execute();
+            $cost_report_tasks = $cost_stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $cost_stmt->close();
+        }
+    } else {
+        $cost_result = $conn->query($cost_base_sql);
+        if ($cost_result) {
+            $cost_report_tasks = $cost_result->fetch_all(MYSQLI_ASSOC);
+        }
+    }
+    foreach ($cost_report_tasks as $row) {
+        $cost_report_totals['total_cost'] += floatval($row['total_cost'] ?? 0);
+        $cost_report_totals['total_received'] += floatval($row['amount_received'] ?? 0);
+        $cost_report_totals['total_transfer_in'] += floatval($row['amount_transfer_in'] ?? 0);
+    }
+    $cost_report_totals['count'] = count($cost_report_tasks);
+}
+
 $conn->close();
+
+// Report type: overview (default) or cost
+$report_type = isset($_GET['report']) && $_GET['report'] === 'cost' ? 'cost' : 'overview';
 
 include 'includes/header.php';
 ?>
@@ -429,9 +493,23 @@ include 'includes/header.php';
     </div>
     <?php else: ?>
 
+    <!-- Report type tabs -->
+    <?php
+    $report_base_url = 'reports?project_id=' . (int)$selected_project_id . '&start_date=' . urlencode($start_date) . '&end_date=' . urlencode($end_date);
+    ?>
+    <div class="flex items-center gap-2 mb-4 border-b border-gray-200">
+        <a href="<?php echo $report_base_url; ?>&report=overview" class="px-4 py-3 text-sm font-medium border-b-2 transition-colors <?php echo $report_type === 'overview' ? 'border-teal-600 text-teal-600' : 'border-transparent text-gray-500 hover:text-gray-700'; ?>">
+            <i class="fas fa-chart-bar mr-2"></i>Overview
+        </a>
+        <a href="<?php echo $report_base_url; ?>&report=cost" class="px-4 py-3 text-sm font-medium border-b-2 transition-colors <?php echo $report_type === 'cost' ? 'border-teal-600 text-teal-600' : 'border-transparent text-gray-500 hover:text-gray-700'; ?>">
+            <i class="fas fa-coins mr-2"></i>Cost Report
+        </a>
+    </div>
+
     <!-- Date Range & Project Filter -->
     <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-4 mb-6">
         <form method="GET" action="" class="flex items-center gap-4 flex-wrap" id="reports-filter-form">
+            <input type="hidden" name="report" value="<?php echo htmlspecialchars($report_type); ?>">
             <div class="flex items-center gap-2">
                 <label class="text-sm font-medium text-gray-700">Project:</label>
                 <select name="project_id" class="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500" onchange="this.form.submit()">
@@ -453,12 +531,122 @@ include 'includes/header.php';
             <button type="submit" class="bg-teal-600 hover:bg-teal-700 text-white px-4 py-2 rounded-lg font-medium transition-colors duration-200 shadow-sm hover:shadow-md">
                 <i class="fas fa-filter"></i> Apply Filter
             </button>
+            <?php if ($report_type === 'overview'): ?>
             <a href="reports?project_id=<?php echo (int)$selected_project_id; ?>&start_date=<?php echo urlencode($start_date); ?>&end_date=<?php echo urlencode($end_date); ?>&download=csv" 
                class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-lg font-medium transition-colors duration-200 shadow-sm hover:shadow-md inline-flex items-center gap-2">
                 <i class="fas fa-download"></i> Download CSV
             </a>
+            <?php endif; ?>
         </form>
     </div>
+
+    <?php if ($report_type === 'cost'): ?>
+    <!-- Cost Report -->
+    <?php if (!$cost_report_available): ?>
+    <div class="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-6 text-amber-800">
+        <p class="font-medium">Cost data is not set up</p>
+        <p class="text-sm mt-1">Task cost and transactions are not available. Use the Cost tab on individual tasks to set amounts and payments first.</p>
+    </div>
+    <?php elseif (empty($cost_report_tasks)): ?>
+    <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-8 text-center text-gray-500">
+        <i class="fas fa-coins text-4xl mb-3 opacity-50"></i>
+        <p class="font-medium">No tasks with cost data</p>
+        <p class="text-sm mt-1">Only tasks that have a total cost set or at least one payment/transaction are shown here.</p>
+    </div>
+    <?php else: ?>
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+            <div class="flex items-center justify-between">
+                <div>
+                    <p class="text-sm font-medium text-gray-600">Tasks with cost</p>
+                    <p class="text-3xl font-bold text-gray-900 mt-2"><?php echo (int)$cost_report_totals['count']; ?></p>
+                </div>
+                <div class="bg-teal-100 rounded-full p-3">
+                    <i class="fas fa-list text-teal-600 text-2xl"></i>
+                </div>
+            </div>
+        </div>
+        <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+            <div class="flex items-center justify-between">
+                <div>
+                    <p class="text-sm font-medium text-gray-600">Total cost</p>
+                    <p class="text-3xl font-bold text-gray-900 mt-2"><?php echo number_format($cost_report_totals['total_cost'], 2); ?></p>
+                </div>
+                <div class="bg-blue-100 rounded-full p-3">
+                    <i class="fas fa-tag text-blue-600 text-2xl"></i>
+                </div>
+            </div>
+        </div>
+        <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+            <div class="flex items-center justify-between">
+                <div>
+                    <p class="text-sm font-medium text-gray-600">Amount received</p>
+                    <p class="text-3xl font-bold text-green-600 mt-2"><?php echo number_format($cost_report_totals['total_received'], 2); ?></p>
+                </div>
+                <div class="bg-green-100 rounded-full p-3">
+                    <i class="fas fa-money-bill-wave text-green-600 text-2xl"></i>
+                </div>
+            </div>
+        </div>
+        <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+            <div class="flex items-center justify-between">
+                <div>
+                    <p class="text-sm font-medium text-gray-600">Transferred in</p>
+                    <p class="text-3xl font-bold text-indigo-600 mt-2"><?php echo number_format($cost_report_totals['total_transfer_in'], 2); ?></p>
+                </div>
+                <div class="bg-indigo-100 rounded-full p-3">
+                    <i class="fas fa-exchange-alt text-indigo-600 text-2xl"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
+        <h3 class="text-lg font-semibold text-gray-900 mb-4">Tasks with amount set or paid</h3>
+        <div class="overflow-x-auto">
+            <table class="min-w-full">
+                <thead>
+                    <tr class="border-b border-gray-200">
+                        <th class="text-left py-3 px-4 text-sm font-semibold text-gray-700">Task</th>
+                        <th class="text-left py-3 px-4 text-sm font-semibold text-gray-700">Project</th>
+                        <th class="text-left py-3 px-4 text-sm font-semibold text-gray-700">Status</th>
+                        <th class="text-left py-3 px-4 text-sm font-semibold text-gray-700">Assignee</th>
+                        <th class="text-right py-3 px-4 text-sm font-semibold text-gray-700">Total cost</th>
+                        <th class="text-right py-3 px-4 text-sm font-semibold text-gray-700">Received</th>
+                        <th class="text-right py-3 px-4 text-sm font-semibold text-gray-700">Transferred in</th>
+                        <th class="text-right py-3 px-4 text-sm font-semibold text-gray-700">Balance</th>
+                        <th class="text-left py-3 px-4 text-sm font-semibold text-gray-700">Due date</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($cost_report_tasks as $row):
+                        $total_cost = floatval($row['total_cost'] ?? 0);
+                        $received = floatval($row['amount_received'] ?? 0);
+                        $transfer_in = floatval($row['amount_transfer_in'] ?? 0);
+                        $balance = $total_cost - $received - $transfer_in;
+                    ?>
+                    <tr class="border-b border-gray-100 hover:bg-gray-50">
+                        <td class="py-3 px-4">
+                            <a href="task_view?id=<?php echo (int)$row['id']; ?>" class="text-sm font-medium text-teal-600 hover:text-teal-700">
+                                <?php echo htmlspecialchars($row['task_id'] ?? ''); ?>
+                            </a>
+                            <span class="block text-xs text-gray-500 truncate max-w-[200px]" title="<?php echo htmlspecialchars($row['title'] ?? ''); ?>"><?php echo htmlspecialchars($row['title'] ?? ''); ?></span>
+                        </td>
+                        <td class="py-3 px-4 text-sm text-gray-700"><?php echo htmlspecialchars($row['project_name'] ?? '—'); ?></td>
+                        <td class="py-3 px-4 text-sm text-gray-700"><?php echo htmlspecialchars($row['status_name'] ?? '—'); ?></td>
+                        <td class="py-3 px-4 text-sm text-gray-700"><?php echo htmlspecialchars($row['assignee_name'] ?? '—'); ?></td>
+                        <td class="py-3 px-4 text-sm text-right font-medium text-gray-900"><?php echo number_format($total_cost, 2); ?></td>
+                        <td class="py-3 px-4 text-sm text-right text-green-600"><?php echo number_format($received, 2); ?></td>
+                        <td class="py-3 px-4 text-sm text-right text-indigo-600"><?php echo number_format($transfer_in, 2); ?></td>
+                        <td class="py-3 px-4 text-sm text-right font-semibold <?php echo $balance <= 0 ? 'text-green-600' : 'text-amber-600'; ?>"><?php echo number_format($balance, 2); ?></td>
+                        <td class="py-3 px-4 text-sm text-gray-600"><?php echo !empty($row['due_date']) ? date('M d, Y', strtotime($row['due_date'])) : '—'; ?></td>
+                    </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <?php endif; ?>
+    <?php else: ?>
 
     <!-- Overall Statistics -->
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
@@ -714,6 +902,7 @@ include 'includes/header.php';
             </div>
         </div>
     </div>
+    <?php endif; /* end overview report */ ?>
     <?php endif; ?>
 </div>
 

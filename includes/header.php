@@ -418,6 +418,10 @@ if (!isset($page_title)) {
                     <i class="fas fa-folder"></i>
                     <span>Projects</span>
                 </a>
+                <a href="reports" class="mobile-profile-item">
+                    <i class="fas fa-chart-bar"></i>
+                    <span>Reports</span>
+                </a>
             <?php endif; ?>
             <?php if (isOrgAdmin() && !empty($_SESSION['organization_id'])): ?>
                 <a href="edit_organization" class="mobile-profile-item">
